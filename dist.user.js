@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         wplace-bot
 // @namespace    https://github.com/SoundOfTheSky
-// @version      1.1.0
+// @version      1.1.1
 // @description  Bot to automate painting on website https://wplace.live
 // @author       SoundOfTheSky
 // @license      MPL-2.0
@@ -69,7 +69,6 @@ class WPlaceBot {
     document.querySelector(".wbot-overlay")?.remove();
   }
   selectImage() {
-    document.querySelector(".btn.btn-primary.btn-lg.relative.z-30")?.click();
     document.querySelector(".wbot .select-image").disabled = true;
     return new Promise((resolve, reject) => {
       const input = document.createElement("input");
@@ -104,10 +103,11 @@ class WPlaceBot {
     });
   }
   async draw() {
-    const canvas = document.querySelector(".maplibregl-canvas");
-    document.querySelector(".wbot-overlay").classList.add("disabled");
-    document.querySelector(".wbot .draw").disabled = true;
     try {
+      await this.updateColors();
+      const canvas = document.querySelector(".maplibregl-canvas");
+      document.querySelector(".wbot-overlay").classList.add("disabled");
+      document.querySelector(".wbot .draw").disabled = true;
       for (;this.cy < this.pixels.length; this.cy++) {
         for (;this.cx < this.pixels[0].length; this.cx++) {
           const pixel = this.getClosestColor(this.pixels[this.cy][this.cx]);
@@ -147,7 +147,6 @@ class WPlaceBot {
         const left = time - Date.now();
         if (left <= 0) {
           new Audio("https://www.myinstants.com/media/sounds/winnerchickendinner.mp3").play();
-          this.draw();
           break;
         }
         $timer.textContent = `${left / 60000 | 0}:${left % 60000 / 1000 | 0}`;
@@ -158,7 +157,11 @@ class WPlaceBot {
       $timer.textContent = "Set timer";
     }
   }
-  updateColors() {
+  async updateColors() {
+    document.querySelector(".flex.gap-2.px-3 > .btn-circle")?.click();
+    await new Promise((r) => setTimeout(r, 250));
+    document.querySelector(".btn.btn-primary.btn-lg.relative.z-30")?.click();
+    await new Promise((r) => setTimeout(r, 250));
     this.colors = [
       ...document.querySelectorAll("button.btn.relative.w-full")
     ].map((button, index, array) => {
@@ -181,11 +184,28 @@ class WPlaceBot {
         button
       };
     });
+    const colorsToBuy = new Set;
+    for (let y = 0;y < this.pixels.length; y++) {
+      for (let x = 0;x < this.pixels[y].length; x++) {
+        const color = this.getClosestColor(this.pixels[y][x], true);
+        if (!color.available)
+          colorsToBuy.add(color);
+      }
+    }
+    const $colors = document.querySelector(".wbot .colors");
+    $colors.innerHTML = "";
+    for (const color of colorsToBuy) {
+      const $div = document.createElement("button");
+      $colors.append($div);
+      $div.style.backgroundColor = `rgb(${color.r} ${color.g} ${color.b})`;
+      $div.addEventListener("click", () => {
+        color.button.click();
+      });
+    }
   }
   processImage() {
     if (!this.image)
       throw new Error("NO_IMAGE");
-    this.updateColors();
     const imageCanvas = document.createElement("canvas");
     const imageContext = imageCanvas.getContext("2d");
     imageCanvas.width = this.image.width * this.scale / 100;
@@ -205,7 +225,7 @@ class WPlaceBot {
       }
     }
     this.updateUI();
-    this.updateSuggestedColors();
+    this.updateColors();
     document.querySelector(".wbot .select-image").disabled = false;
     document.querySelector(".wbot .draw").disabled = false;
     document.querySelector(".wbot .timer").disabled = false;
@@ -315,7 +335,8 @@ class WPlaceBot {
         x: this.x,
         y: this.y,
         clientX: event.clientX,
-        clientY: event.clientY
+        clientY: event.clientY,
+        width: event.clientX > this.x + this.width ? this.width : undefined
       };
     });
     overlay.addEventListener("mouseup", () => {
@@ -324,8 +345,12 @@ class WPlaceBot {
     overlay.addEventListener("mousemove", (event) => {
       if (!this.overlayEdit)
         return;
-      this.x = this.overlayEdit.x + event.clientX - this.overlayEdit.clientX;
-      this.y = this.overlayEdit.y + event.clientY - this.overlayEdit.clientY;
+      if (this.overlayEdit.width) {
+        this.width = this.overlayEdit.width + event.clientX - this.overlayEdit.clientX;
+      } else {
+        this.x = this.overlayEdit.x + event.clientX - this.overlayEdit.clientX;
+        this.y = this.overlayEdit.y + event.clientY - this.overlayEdit.clientY;
+      }
       this.updateUI();
     });
     overlay.addEventListener("wheel", (event) => {
@@ -370,26 +395,6 @@ class WPlaceBot {
     context.fillStyle = `cyan`;
     context.fillRect(this.cx * pixelSize, 0, pixelSize, overlay.height);
     context.fillRect(0, this.cy * pixelSize, overlay.width, pixelSize);
-  }
-  updateSuggestedColors() {
-    const colorsToBuy = new Set;
-    for (let y = 0;y < this.pixels.length; y++) {
-      for (let x = 0;x < this.pixels[y].length; x++) {
-        const color = this.getClosestColor(this.pixels[y][x]);
-        if (!color.available)
-          colorsToBuy.add(color);
-      }
-    }
-    const $colors = document.querySelector(".wbot .colors");
-    $colors.innerHTML = "";
-    for (const color of colorsToBuy) {
-      const $div = document.createElement("button");
-      $colors.append($div);
-      $div.style.backgroundColor = `rgb(${color.r} ${color.g} ${color.b})`;
-      $div.addEventListener("click", () => {
-        color.button.click();
-      });
-    }
   }
   getClosestColor({ r, g, b, a }, allowNotAvailable) {
     if (this.colors.length === 0)
