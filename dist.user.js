@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         wplace-bot
 // @namespace    https://github.com/SoundOfTheSky
-// @version      1.0.0
+// @version      1.1.0
 // @description  Bot to automate painting on website https://wplace.live
 // @author       SoundOfTheSky
 // @license      MPL-2.0
@@ -105,27 +105,34 @@ class WPlaceBot {
   }
   async draw() {
     const canvas = document.querySelector(".maplibregl-canvas");
-    for (;this.cy < this.pixels.length; this.cy++) {
-      for (;this.cx < this.pixels[0].length; this.cx++) {
-        const pixel = this.getClosestColor(this.pixels[this.cy][this.cx]);
-        if (pixel.a === 0)
-          continue;
-        pixel.button.click();
-        await new Promise((r) => setTimeout(r, 1));
-        const pixelSize = this.width / this.pixels.length;
-        canvas.dispatchEvent(new MouseEvent("click", {
-          bubbles: true,
-          cancelable: true,
-          clientX: this.x + this.cx * pixelSize + pixelSize / 2,
-          clientY: this.y + this.cy * pixelSize + pixelSize / 2,
-          button: 0
-        }));
-        if (document.querySelector("ol"))
-          return;
-        this.updateUI();
-        await new Promise((r) => setTimeout(r, 1));
+    document.querySelector(".wbot-overlay").classList.add("disabled");
+    document.querySelector(".wbot .draw").disabled = true;
+    try {
+      for (;this.cy < this.pixels.length; this.cy++) {
+        for (;this.cx < this.pixels[0].length; this.cx++) {
+          const pixel = this.getClosestColor(this.pixels[this.cy][this.cx]);
+          if (pixel.a === 0)
+            continue;
+          pixel.button.click();
+          await new Promise((r) => setTimeout(r, 1));
+          const pixelSize = this.width / this.pixels.length;
+          canvas.dispatchEvent(new MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            clientX: this.x + this.cx * pixelSize + pixelSize / 2,
+            clientY: this.y + this.cy * pixelSize + pixelSize / 2,
+            button: 0
+          }));
+          if (document.querySelector("ol"))
+            return;
+          this.updateUI();
+          await new Promise((r) => setTimeout(r, 1));
+        }
+        this.cx = 0;
       }
-      this.cx = 0;
+    } finally {
+      document.querySelector(".wbot-overlay").classList.remove("disabled");
+      document.querySelector(".wbot .draw").disabled = false;
     }
   }
   async timer() {
@@ -143,7 +150,7 @@ class WPlaceBot {
           this.draw();
           break;
         }
-        $timer.textContent = `${left / 60000 | 0}:${left / 1000 | 0}`;
+        $timer.textContent = `${left / 60000 | 0}:${left % 60000 / 1000 | 0}`;
         await new Promise((r) => setTimeout(r, 1000));
       }
     } finally {
@@ -198,6 +205,7 @@ class WPlaceBot {
       }
     }
     this.updateUI();
+    this.updateSuggestedColors();
     document.querySelector(".wbot .select-image").disabled = false;
     document.querySelector(".wbot .draw").disabled = false;
     document.querySelector(".wbot .timer").disabled = false;
@@ -241,6 +249,12 @@ class WPlaceBot {
         position: fixed;
         z-index: 9999;
         border: 1px solid red;
+        cursor: all-scroll;
+        top: 0;
+        left: 0;
+      }
+
+      .wbot-overlay.disabled {
         pointer-events: none;
       }
 
@@ -293,15 +307,15 @@ class WPlaceBot {
     overlay.addEventListener("click", (event) => {
       const pixelSize = this.width / this.pixels.length;
       this.cx = (event.clientX - this.x) / pixelSize | 0;
-      this.cx = (event.clientY - this.y) / pixelSize | 0;
+      this.cy = (event.clientY - this.y) / pixelSize | 0;
+      this.updateUI();
     });
     overlay.addEventListener("mousedown", (event) => {
       this.overlayEdit = {
         x: this.x,
         y: this.y,
         clientX: event.clientX,
-        clientY: event.clientY,
-        width: event.clientX > this.x + this.width - 32 ? this.width : undefined
+        clientY: event.clientY
       };
     });
     overlay.addEventListener("mouseup", () => {
@@ -310,12 +324,12 @@ class WPlaceBot {
     overlay.addEventListener("mousemove", (event) => {
       if (!this.overlayEdit)
         return;
-      if (this.overlayEdit.width)
-        this.width = this.width + event.clientX - this.overlayEdit.clientX;
-      else {
-        this.x = this.overlayEdit.x + event.clientX - this.overlayEdit.clientX;
-        this.x = this.overlayEdit.y + event.clientY - this.overlayEdit.clientY;
-      }
+      this.x = this.overlayEdit.x + event.clientX - this.overlayEdit.clientX;
+      this.y = this.overlayEdit.y + event.clientY - this.overlayEdit.clientY;
+      this.updateUI();
+    });
+    overlay.addEventListener("wheel", (event) => {
+      this.width += event.deltaY < 0 ? 1 : -1;
       this.updateUI();
     });
     document.body.append(overlay);
@@ -335,6 +349,29 @@ class WPlaceBot {
       input.value = this[name];
     };
     ["x", "y", "cx", "cy", "width", "scale"].forEach(updateInput);
+    const overlay = document.querySelector(".wbot-overlay");
+    overlay.style.transform = `translate(${this.x}px, ${this.y}px)`;
+    const pixelSize = this.width / this.pixels.length;
+    overlay.height = pixelSize * this.pixels.length;
+    overlay.width = pixelSize * this.pixels[0].length;
+    const context = overlay.getContext("2d");
+    context.clearRect(0, 0, overlay.width, overlay.height);
+    context.strokeStyle = `red`;
+    for (let y = 0;y < this.pixels.length; y++) {
+      const row = this.pixels[y];
+      for (let x = 0;x < row.length; x++) {
+        const pixel = row[x];
+        context.fillStyle = `rgb(${pixel.r} ${pixel.g} ${pixel.b})`;
+        context.globalAlpha = pixel.a / 510;
+        context.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
+      }
+    }
+    context.globalAlpha = 0.8;
+    context.fillStyle = `cyan`;
+    context.fillRect(this.cx * pixelSize, 0, pixelSize, overlay.height);
+    context.fillRect(0, this.cy * pixelSize, overlay.width, pixelSize);
+  }
+  updateSuggestedColors() {
     const colorsToBuy = new Set;
     for (let y = 0;y < this.pixels.length; y++) {
       for (let x = 0;x < this.pixels[y].length; x++) {
@@ -353,31 +390,6 @@ class WPlaceBot {
         color.button.click();
       });
     }
-    this.updateOverlay();
-  }
-  updateOverlay() {
-    const overlay = document.querySelector(".wbot-overlay");
-    overlay.style.left = this.x + "px";
-    overlay.style.top = this.y + "px";
-    const context = overlay.getContext("2d");
-    context.clearRect(0, 0, overlay.width, overlay.height);
-    const pixelSize = this.width / this.pixels.length;
-    overlay.height = pixelSize * this.pixels.length;
-    overlay.width = pixelSize * this.pixels[0].length;
-    context.strokeStyle = `red`;
-    for (let y = 0;y < this.pixels.length; y++) {
-      const row = this.pixels[y];
-      for (let x = 0;x < row.length; x++) {
-        const pixel = row[x];
-        context.fillStyle = `rgb(${pixel.r} ${pixel.g} ${pixel.b})`;
-        context.globalAlpha = pixel.a / 510;
-        context.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
-      }
-    }
-    context.globalAlpha = 0.8;
-    context.fillStyle = `cyan`;
-    context.fillRect(this.cx * pixelSize, 0, pixelSize, overlay.height);
-    context.fillRect(0, this.cy * pixelSize, overlay.width, pixelSize);
   }
   getClosestColor({ r, g, b, a }, allowNotAvailable) {
     if (this.colors.length === 0)
