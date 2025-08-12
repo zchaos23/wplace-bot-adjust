@@ -1,0 +1,3 @@
+{
+  "extends": "@softsky/configs/tsconfig.json"
+}

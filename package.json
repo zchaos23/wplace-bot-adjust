@@ -1,0 +1,16 @@
+{
+  "name": "screeps",
+  "version": "1.0.0",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "bun build ./src/index.ts --outfile=dist.js && (cat script.txt dist.js) > tmp && mv tmp dist.js",
+    "lint": "eslint \"src/**/*{.js,.ts}\" --fix && tsc"
+  },
+  "dependencies": {
+    "@softsky/utils": "^2.7.1"
+  },
+  "devDependencies": {
+    "@softsky/configs": "^1.3.4"
+  }
+}
