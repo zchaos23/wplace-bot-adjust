@@ -4,7 +4,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "start": "bun build ./src/index.ts --outfile=dist.js && (cat script.txt dist.js) > tmp && mv tmp dist.js",
+    "start": "bun build ./src/index.ts --outfile=dist.user.js && (cat script.txt dist.user.js) > tmp && mv tmp dist.user.js",
     "lint": "eslint \"src/**/*{.js,.ts}\" --fix && tsc"
   },
   "dependencies": {

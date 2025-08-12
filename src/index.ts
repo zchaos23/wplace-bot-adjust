@@ -1,3 +1,5 @@
+/* eslint-disable unicorn/no-array-for-each */
+/* eslint-disable @typescript-eslint/non-nullable-type-assertion-style */
 type Color = {
   r: number
   g: number
@@ -13,12 +15,12 @@ type WPlaceColor = Color & {
 class WPlaceBot {
   public colors: WPlaceColor[] = []
   public pixels: Color[][] = [[]]
-  public colorsToBuy = new Set<WPlaceColor>()
-  public overlayMove?: {
+  public overlayEdit?: {
     x: number
     y: number
     clientX: number
     clientY: number
+    width?: number
   }
   public get scale() {
     return +(localStorage.getItem('wbot_scale') ?? '100')
@@ -78,7 +80,6 @@ class WPlaceBot {
         '.wbot .select-image',
       ) as unknown as HTMLButtonElement
     ).disabled = true
-    console.log('selectImage')
     return new Promise<void>((resolve, reject) => {
       const input = document.createElement('input')
       input.type = 'file'
@@ -117,7 +118,6 @@ class WPlaceBot {
   }
 
   public async draw() {
-    console.log('draw')
     const canvas = document.querySelector('.maplibregl-canvas')!
     for (; this.cy < this.pixels.length; this.cy++) {
       for (; this.cx < this.pixels[0]!.length; this.cx++) {
@@ -179,7 +179,6 @@ class WPlaceBot {
   }
 
   private updateColors() {
-    console.log('updateColors')
     this.colors = (
       [
         ...document.querySelectorAll('button.btn.relative.w-full'),
@@ -210,7 +209,6 @@ class WPlaceBot {
   }
 
   private processImage() {
-    console.log('processImage')
     if (!this.image) throw new Error('NO_IMAGE')
     this.updateColors()
     const imageCanvas = document.createElement('canvas')
@@ -251,10 +249,21 @@ class WPlaceBot {
         '.wbot .select-image',
       ) as unknown as HTMLButtonElement
     ).disabled = false
+    ;(
+      document.querySelector('.wbot .draw') as unknown as HTMLButtonElement
+    ).disabled = false
+    ;(
+      document.querySelector('.wbot .timer') as unknown as HTMLButtonElement
+    ).disabled = false
+    ;(
+      document.querySelector(
+        '.wbot .hide-overlay',
+      ) as unknown as HTMLButtonElement
+    ).disabled = false
+    document.querySelector('.wbot-overlay')!.classList.remove('hidden')
   }
 
   private initUI() {
-    console.log('initUI')
     const style = document.createElement('style')
     style.textContent = `
       .wbot {
@@ -284,7 +293,7 @@ class WPlaceBot {
       }
 
       .wbot button:hover, .wbot input:hover {
-        background-color: #2c2c2cff;
+        background-color: #2c2c2c;
       }
 
       .wbot-overlay {
@@ -297,15 +306,31 @@ class WPlaceBot {
       .hidden {
         display: none;
       }
+
+      .wbot [disabled], .wbot *:disabled {
+        background-color: #505050;
+        cursor: not-allowed;
+      }
+
+      .wbot .colors {
+        display: flex;
+      }
+
+      .wbot .colors button {
+        width: 32px;
+        height: 32px;
+        cursor: pointer;
+      }
     `
     document.head.append(style)
     const container = document.createElement('div')
     container.className = 'wbot'
     container.innerHTML = `
           <button class="select-image">Select image</button>
-          <button class="draw">Draw batch</button>
-          <button class="timer">Set timer</button>
-          <button class="hide-overlay">Hide overlay</button>
+          <button class="draw" disabled>Draw</button>
+          <button class="timer" disabled>Set timer</button>
+          <button class="hide-overlay" disabled>Hide overlay</button>
+          <div class="colors"></div>
           <table><tbody>
             <tr><td>Scale: </td><td><input type="number" class="scale"></td></tr>
             <tr><td>Width: </td><td><input type="number" class="width"></td></tr>
@@ -329,27 +354,33 @@ class WPlaceBot {
     container.querySelector('.hide-overlay')!.addEventListener('click', () => {
       overlay.classList.toggle('hidden')
     })
-    overlay.classList.add('wbot-overlay')
+    overlay.classList.add('wbot-overlay', 'hidden')
     overlay.addEventListener('click', (event) => {
       const pixelSize = this.width / this.pixels.length
       this.cx = ((event.clientX - this.x) / pixelSize) | 0
       this.cx = ((event.clientY - this.y) / pixelSize) | 0
     })
     overlay.addEventListener('mousedown', (event) => {
-      this.overlayMove = {
+      this.overlayEdit = {
         x: this.x,
         y: this.y,
         clientX: event.clientX,
         clientY: event.clientY,
+        width:
+          event.clientX > this.x + this.width - 32 ? this.width : undefined,
       }
     })
     overlay.addEventListener('mouseup', () => {
-      this.overlayMove = undefined
+      this.overlayEdit = undefined
     })
     overlay.addEventListener('mousemove', (event) => {
-      if (!this.overlayMove) return
-      this.x = this.overlayMove.x + event.clientX - this.overlayMove.clientX
-      this.x = this.overlayMove.y + event.clientY - this.overlayMove.clientY
+      if (!this.overlayEdit) return
+      if (this.overlayEdit.width)
+        this.width = this.width + event.clientX - this.overlayEdit.clientX
+      else {
+        this.x = this.overlayEdit.x + event.clientX - this.overlayEdit.clientX
+        this.x = this.overlayEdit.y + event.clientY - this.overlayEdit.clientY
+      }
       this.updateUI()
     })
     document.body.append(overlay)
@@ -369,29 +400,35 @@ class WPlaceBot {
   }
 
   private updateUI() {
-    console.log('updateUI')
     const updateInput = (name: string) => {
-      // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style
       const input = document.querySelector('.wbot .' + name) as HTMLInputElement
       input.value = (this as unknown as Record<string, number>)[
         name
       ] as unknown as string
     }
-    for (const name of ['x', 'y', 'cx', 'cy', 'width', 'scale'])
-      updateInput(name)
-    this.colorsToBuy.clear()
+    ;['x', 'y', 'cx', 'cy', 'width', 'scale'].forEach(updateInput)
+    const colorsToBuy = new Set<WPlaceColor>()
     for (let y = 0; y < this.pixels.length; y++) {
       for (let x = 0; x < this.pixels[y]!.length; x++) {
         const color = this.getClosestColor(this.pixels[y]![x]!)
-        if (!color.available) this.colorsToBuy.add(color)
+        if (!color.available) colorsToBuy.add(color)
       }
     }
+    const $colors = document.querySelector('.wbot .colors')!
+    $colors.innerHTML = ''
+    for (const color of colorsToBuy) {
+      const $div = document.createElement('button')
+      $colors.append($div)
+      $div.style.backgroundColor = `rgb(${color.r} ${color.g} ${color.b})`
+      $div.addEventListener('click', () => {
+        color.button.click()
+      })
+    }
+
     this.updateOverlay()
   }
 
   private updateOverlay() {
-    console.log('updateOverlay')
-    // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style
     const overlay = document.querySelector('.wbot-overlay') as HTMLCanvasElement
     overlay.style.left = this.x + 'px'
     overlay.style.top = this.y + 'px'
@@ -408,17 +445,17 @@ class WPlaceBot {
         context.fillStyle = `rgb(${pixel.r} ${pixel.g} ${pixel.b})`
         context.globalAlpha = pixel.a / 510 // Double 255 to make it more transparent
         context.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize)
-        context.globalAlpha = 0.1
-        context.beginPath()
-        context.moveTo(x * pixelSize, 0)
-        context.lineTo(x * pixelSize, overlay.height)
-        context.stroke()
+        // context.globalAlpha = 0.1
+        // context.beginPath()
+        // context.moveTo(x * pixelSize, 0)
+        // context.lineTo(x * pixelSize, overlay.height)
+        // context.stroke()
       }
-      context.globalAlpha = 0.1
-      context.beginPath()
-      context.moveTo(0, y * pixelSize)
-      context.lineTo(overlay.width, y * pixelSize)
-      context.stroke()
+      // context.globalAlpha = 0.1
+      // context.beginPath()
+      // context.moveTo(0, y * pixelSize)
+      // context.lineTo(overlay.width, y * pixelSize)
+      // context.stroke()
     }
     context.globalAlpha = 0.8
     context.fillStyle = `cyan`
@@ -427,7 +464,6 @@ class WPlaceBot {
   }
 
   private getClosestColor({ r, g, b, a }: Color, allowNotAvailable?: boolean) {
-    console.log('getClosestColor')
     if (this.colors.length === 0) throw new Error('NO_COLORS')
     if (a < 100) return this.colors.at(-1)!
     let minDelta = Infinity
