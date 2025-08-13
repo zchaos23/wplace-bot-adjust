@@ -136,9 +136,9 @@ class WPlaceBot {
               button: 0,
             }),
           )
+          await new Promise((r) => setTimeout(r, 1))
           if (document.querySelector('ol')) return
           this.updateUI()
-          await new Promise((r) => setTimeout(r, 1))
         }
         this.cx = 0
       }

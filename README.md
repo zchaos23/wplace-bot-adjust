@@ -16,12 +16,8 @@
 
 ## How to use
 
-1. Draw at least two corners for easy aligning
-2. Press "Select image"
-3. Scroll with mouse on overlay to resize it
-4. Drag overlay to align it with your corners
-5. Click on overlay to select start point
-6. Press "Draw"
-7. Press "Paint" to confirm
-8. Press "Set timer" to get notified when all your pixels are restored
-9. Repeat steps 6 - 8
+![alt text](https://github.com/SoundOfTheSky/wplace-bot/raw/refs/heads/main/Instruction.webp)
+
+## Known bugs
+
+1. Sometimes "Draw" doesn't place pixels. But if you click on another tab, come back and click only on "Draw" it should work. I don't know what's wrong but fix should come soon.
