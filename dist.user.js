@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         wplace-bot
 // @namespace    https://github.com/SoundOfTheSky
-// @version      2.0.0
+// @version      2.0.1
 // @description  Bot to automate painting on website https://wplace.live
 // @author       SoundOfTheSky
 // @license      MPL-2.0
@@ -315,7 +315,6 @@ class WPlaceBot {
         const file = input.files?.[0];
         if (!file) {
           reject(new Error("NO_FILE"));
-          this.widget.setDisabled("select-image", false);
           return;
         }
         const reader = new FileReader;
@@ -331,8 +330,6 @@ class WPlaceBot {
               resolve();
             } catch (error) {
               reject(error);
-            } finally {
-              this.widget.setDisabled("select-image", false);
             }
           });
           this.image.addEventListener("error", reject);
@@ -340,7 +337,12 @@ class WPlaceBot {
         reader.addEventListener("error", reject);
         reader.readAsDataURL(file);
       });
+      input.addEventListener("cancel", () => {
+        reject(new Error("CANCEL"));
+      });
       input.click();
+    }).finally(() => {
+      this.widget.setDisabled("select-image", false);
     });
   }
   async draw() {
@@ -437,7 +439,7 @@ class WPlaceBot {
         resolve();
       const origStatus = this.widget.status;
       this.widget.status = "Unfocus window!";
-      document.addEventListener("blur", () => {
+      window.addEventListener("blur", () => {
         this.widget.status = origStatus;
         setTimeout(resolve, 1);
       }, {

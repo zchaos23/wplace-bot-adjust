@@ -66,7 +66,6 @@ export class WPlaceBot {
         const file = input.files?.[0]
         if (!file) {
           reject(new Error('NO_FILE'))
-          this.widget.setDisabled('select-image', false)
           return
         }
         const reader = new FileReader()
@@ -82,8 +81,6 @@ export class WPlaceBot {
               resolve()
             } catch (error) {
               reject(error as Error)
-            } finally {
-              this.widget.setDisabled('select-image', false)
             }
           })
           this.image.addEventListener('error', reject)
@@ -91,7 +88,12 @@ export class WPlaceBot {
         reader.addEventListener('error', reject)
         reader.readAsDataURL(file)
       })
+      input.addEventListener('cancel', () => {
+        reject(new Error('CANCEL'))
+      })
       input.click()
+    }).finally(() => {
+      this.widget.setDisabled('select-image', false)
     })
   }
 
@@ -220,7 +222,7 @@ export class WPlaceBot {
       if (!document.hasFocus()) resolve()
       const origStatus = this.widget.status
       this.widget.status = 'Unfocus window!'
-      document.addEventListener(
+      window.addEventListener(
         'blur',
         () => {
           this.widget.status = origStatus
