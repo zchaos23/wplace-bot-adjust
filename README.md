@@ -3,7 +3,7 @@
 ## Features
 
 1. Image overlay
-2. Auto draw (still need to pass captcha manually)
+2. Auto draw (still need to click captcha manually)
 3. Auto image convert to available colors
 4. Suggests colors to buy
 5. Set timer until pixels are restored
@@ -19,12 +19,14 @@
 ![Instruction1](https://github.com/SoundOfTheSky/wplace-bot/raw/refs/heads/main/Instruction1.png)
 ![Instruction2](https://github.com/SoundOfTheSky/wplace-bot/raw/refs/heads/main/Instruction2.png)
 
-## Known issues
+## Captcha bypass
 
-1. Sometimes "Draw" doesn't place pixels. But if you click on another tab, come back and click only on "Draw" it should work. I don't know what's wrong but fix should come soon.
-2. It's hard to align images. For now draw two corners beforehand for easy alignment.
-3. Bot doesn't know what pixels are already drawn.
+I recommend using simple autoclicker like this
 
-## Help wanted
+1. Click "Draw"
+2. Click on URL to unfocus window, wait 5s
+3. Click Captcha, wait 5s
+4. Click "Paint", wait 5s
+5. Repeat every 30 minutes
 
-We need a way to read map's position and zoom to fix issues 2 and 3.
+Yes, it works.
