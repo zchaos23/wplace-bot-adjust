@@ -30,3 +30,7 @@ I recommend using simple autoclicker like this
 5. Repeat every 30 minutes
 
 Yes, it works.
+
+## Known issues
+
+1. Chrome's unfocus doesn't work... Fix will be tomorrow.
