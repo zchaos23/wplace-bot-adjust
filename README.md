@@ -29,8 +29,10 @@ I recommend using simple autoclicker like this
 4. Click "Paint", wait 5s
 5. Repeat every 30 minutes
 
-Yes, it works.
+Yes, it works. But don't forget from time to time to check that you're still logged in.
 
 ## Known issues
 
-1. Chrome's unfocus doesn't work... Fix will be tomorrow.
+1. It's not quite clear when to unfocus window
+2. Bot doesn't know what colors are already drawn
+3. Once your session on wesite ends, bot obviously stops
