@@ -36,6 +36,7 @@ Yes, it works. But don't forget from time to time to check that you're still log
 1. It's not quite clear when to unfocus window
 2. Bot doesn't know what colors are already drawn
 3. Once your session on wesite ends, bot obviously stops
+4. Screen with high DPI are unsupported (for now)
 
 ## Contribution
 
