@@ -36,3 +36,11 @@ Yes, it works. But don't forget from time to time to check that you're still log
 1. It's not quite clear when to unfocus window
 2. Bot doesn't know what colors are already drawn
 3. Once your session on wesite ends, bot obviously stops
+
+## Contribution
+
+1. Install [Bun](https://bun.sh/)
+2. Install dependencies `bun i`
+3. Up version in `sciprt.txt`
+4. Lint `bun run lint`
+5. Build `bun start`

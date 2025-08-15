@@ -1,41 +1,38 @@
+import { NoColorsError, NoImageError, NoMarkerError } from './errors'
 import { Overlay } from './overlay'
-import { wait } from './utilities'
+import { SPACE_EVENT, wait } from './utilities'
 import { Widget } from './widget'
 
-type Color = {
+export type Color = {
   r: number
   g: number
   b: number
   a: number
 }
 
-type WPlaceColor = Color & {
+export type WPlaceColor = Color & {
   available: boolean
   button: HTMLButtonElement
 }
 
+/**
+ * Main class. Initializes everything.
+ * Used to interact with wplace
+ * */
 export class WPlaceBot {
+  private _canvas?: HTMLCanvasElement
+  public get canvas(): HTMLCanvasElement {
+    this._canvas ??= document.querySelector(
+      '.maplibregl-canvas',
+    ) as unknown as HTMLCanvasElement
+    return this._canvas
+  }
   /** Original image to rescale */
   public image?: HTMLImageElement
   /** WPlace colors. Update with updateColors() */
   public colors: WPlaceColor[] = []
   /** Image pixels */
   public pixels: Color[][] = [[]]
-  /** Moving/resizing overlay */
-  public overlayEdit?: {
-    x: number
-    y: number
-    originalX: number
-    originalY: number
-    width?: number
-  }
-  /** Moving widget */
-  public widgetEdit?: {
-    x: number
-    y: number
-    originalX: number
-    originalY: number
-  }
 
   public widget = new Widget(this)
 
@@ -47,16 +44,25 @@ export class WPlaceBot {
   }
   public set scale(value) {
     localStorage.setItem('wbot_scale', value.toString())
+    ;(
+      this.widget.element.querySelector('.scale') as unknown as HTMLInputElement
+    ).value = value as unknown as string
+    this.processImage()
   }
 
-  /** Open select image popup */
+  /** Handles selectImage button press
+   * 1. Calls select image dialog,
+   * 2. Processes this image
+   * 3. Aligns overlay
+   * 4. Reads colors
+   */
   public selectImage() {
     if (
       !(document.querySelector('.maplibregl-marker.z-20') as unknown as
         | undefined
         | HTMLDivElement)
     )
-      return
+      throw new NoMarkerError(this)
     this.widget.setDisabled('select-image', true)
     return new Promise<void>((resolve, reject) => {
       const input = document.createElement('input')
@@ -65,7 +71,7 @@ export class WPlaceBot {
       input.addEventListener('change', () => {
         const file = input.files?.[0]
         if (!file) {
-          reject(new Error('NO_FILE'))
+          reject(new NoImageError(this))
           return
         }
         const reader = new FileReader()
@@ -75,9 +81,11 @@ export class WPlaceBot {
           this.image.addEventListener('load', async () => {
             try {
               this.processImage()
-              await this.widget.align()
+              await this.overlay.align()
               await this.updateColors()
-              this.widget.status = 'Ready to draw!'
+              this.widget.status = '✅ Ready to draw!'
+              this.widget.setDisabled('draw', false)
+              this.overlay.wrapper.classList.remove('hidden')
               resolve()
             } catch (error) {
               reject(error as Error)
@@ -89,7 +97,7 @@ export class WPlaceBot {
         reader.readAsDataURL(file)
       })
       input.addEventListener('cancel', () => {
-        reject(new Error('CANCEL'))
+        reject(new NoImageError(this))
       })
       input.click()
     }).finally(() => {
@@ -99,7 +107,7 @@ export class WPlaceBot {
 
   /** Start drawing */
   public async draw() {
-    this.widget.status = 'Drawing'
+    this.widget.status = '⌛ Drawing...'
     try {
       await this.updateColors()
       this.overlay.element.classList.add('disabled')
@@ -113,10 +121,23 @@ export class WPlaceBot {
           pixel.button.click()
           await wait(1)
           const pixelSize = this.overlay.getPixelSize()
-          await this.clickCanvas(
-            this.overlay.x + this.overlay.cx * pixelSize + pixelSize / 2,
-            this.overlay.y + 16 + this.overlay.cy * pixelSize + pixelSize / 2,
+          this.canvas.dispatchEvent(
+            new MouseEvent('mousemove', {
+              bubbles: true,
+              clientX:
+                this.overlay.x + this.overlay.cx * pixelSize + pixelSize / 2,
+              clientY:
+                this.overlay.y +
+                16 +
+                this.overlay.cy * pixelSize +
+                pixelSize / 2,
+            }),
           )
+          await wait(1)
+          this.canvas.dispatchEvent(new KeyboardEvent('keydown', SPACE_EVENT))
+          await wait(1)
+          this.canvas.dispatchEvent(new KeyboardEvent('keyup', SPACE_EVENT))
+          await wait(1)
           if (document.querySelector('ol')) return
         }
         this.overlay.cx = 0
@@ -124,26 +145,8 @@ export class WPlaceBot {
     } finally {
       this.overlay.element.classList.remove('disabled')
       this.widget.setDisabled('draw', false)
-      this.widget.status = 'Press "Paint" and "Set timer"'
+      this.widget.status = '✅ Press "Paint" and "Set timer"'
     }
-  }
-
-  public async clickCanvas(clientX: number, clientY: number) {
-    await this.waitForUnfocus()
-    ;(
-      document.querySelector(
-        '.maplibregl-canvas',
-      ) as unknown as HTMLCanvasElement
-    ).dispatchEvent(
-      new MouseEvent('click', {
-        bubbles: true,
-        cancelable: true,
-        clientX,
-        clientY,
-        button: 0,
-      }),
-    )
-    await wait(1)
   }
 
   /** Read colors, update available and colors to buy */
@@ -197,47 +200,24 @@ export class WPlaceBot {
         button: button,
       }
     })
-    // Colors to buy
-    const colorsToBuy = new Set<WPlaceColor>()
+
+    // Find unbought colors, and their amonut
+    const colorsToBuy = new Map<WPlaceColor, number>()
     for (let y = 0; y < this.pixels.length; y++) {
-      for (let x = 0; x < this.pixels[y]!.length; x++) {
+      for (let x = 0; x < this.pixels[0]!.length; x++) {
         const color = this.getClosestColor(this.pixels[y]![x]!, true)
-        if (!color.available) colorsToBuy.add(color)
+        if (color.available) continue
+        colorsToBuy.set(color, (colorsToBuy.get(color) ?? 0) + 1)
       }
     }
-    const $colors = this.widget.element.querySelector('.colors')!
-    $colors.innerHTML = ''
-    for (const color of colorsToBuy) {
-      const $div = document.createElement('button')
-      $colors.append($div)
-      $div.style.backgroundColor = `rgb(${color.r} ${color.g} ${color.b})`
-      $div.addEventListener('click', () => {
-        color.button.click()
-      })
-    }
-  }
-
-  protected waitForUnfocus() {
-    return new Promise<void>((resolve) => {
-      if (!document.hasFocus()) resolve()
-      const origStatus = this.widget.status
-      this.widget.status = 'Unfocus window!'
-      window.addEventListener(
-        'blur',
-        () => {
-          this.widget.status = origStatus
-          setTimeout(resolve, 1)
-        },
-        {
-          once: true,
-        },
-      )
-    })
+    this.widget.setColorsToBuy(
+      [...colorsToBuy.entries()].sort(([, a], [, b]) => b - a),
+    )
   }
 
   /** Process image into pixels array */
   private processImage() {
-    if (!this.image) throw new Error('NO_IMAGE')
+    if (!this.image) throw new NoImageError(this)
     const imageCanvas = document.createElement('canvas')
     const imageContext = imageCanvas.getContext('2d')!
     imageCanvas.width = (this.image.width * this.scale) / 100
@@ -272,13 +252,11 @@ export class WPlaceBot {
     }
     this.overlay.update()
     this.widget.setDisabled('select-image', false)
-    this.widget.setDisabled('draw', false)
-    this.overlay.wrapper.classList.remove('hidden')
   }
 
   /** Get closest available (or unavailable) color */
   private getClosestColor({ r, g, b, a }: Color, allowNotAvailable?: boolean) {
-    if (this.colors.length === 0) throw new Error('NO_COLORS')
+    if (this.colors.length === 0) throw new NoColorsError(this)
     if (a < 100) return this.colors.at(-1)!
     let minDelta = Infinity
     let min: WPlaceColor | undefined

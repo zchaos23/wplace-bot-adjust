@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         wplace-bot
 // @namespace    https://github.com/SoundOfTheSky
-// @version      2.0.1
+// @version      2.1.0
 // @description  Bot to automate painting on website https://wplace.live
 // @author       SoundOfTheSky
 // @license      MPL-2.0
@@ -16,16 +16,85 @@
 // Wplace  --> https://wplace.live
 // License --> https://www.mozilla.org/en-US/MPL/2.0/
 
+// src/errors.ts
+class WPlaceBotError extends Error {
+  name = "ValidationError";
+  constructor(message, bot) {
+    super(message);
+    bot.widget.status = message;
+  }
+}
+
+class NoMarkerError extends WPlaceBotError {
+  name = "NoMarkerError";
+  constructor(bot) {
+    super("❌ Place marker on the map", bot);
+  }
+}
+
+class NoImageError extends WPlaceBotError {
+  name = "NoImageError";
+  constructor(bot) {
+    super("❌ No image is selected", bot);
+  }
+}
+
+class NoColorsError extends WPlaceBotError {
+  name = "NoColorsError";
+  constructor(bot) {
+    super("❌ Can not read colors panel", bot);
+  }
+}
+
+class ApiError extends WPlaceBotError {
+  name = "ApiError";
+  constructor(bot) {
+    super("❌ Can not connect to server", bot);
+  }
+}
+
+// src/utilities.ts
+function wait(time) {
+  return new Promise((resolve) => setTimeout(resolve, time));
+}
+var SPACE_EVENT = {
+  key: " ",
+  code: "Space",
+  keyCode: 32,
+  which: 32,
+  bubbles: true,
+  cancelable: true
+};
+function waitForUnfocus() {
+  return new Promise((resolve) => {
+    if (!document.hasFocus())
+      resolve();
+    window.addEventListener("blur", () => {
+      setTimeout(resolve, 1);
+    }, {
+      once: true
+    });
+  });
+}
+
 // src/wrapper.html
 var wrapper_default = `<div class="move">
   <button class="minimize">🗕</button>
-  <div class="resize"></div>
-</div>`;
+</div>
+<div class="resize n"></div>
+<div class="resize e"></div>
+<div class="resize s"></div>
+<div class="resize w"></div>
+<div class="resize ne"></div>
+<div class="resize nw"></div>
+<div class="resize se"></div>
+<div class="resize sw"></div>`;
 
 // src/wrapper.ts
 class Wrapper {
   element;
   localStoragePrefix;
+  options;
   moveInfo;
   get x() {
     return +(localStorage.getItem(this.localStoragePrefix + "x") ?? "64");
@@ -42,24 +111,57 @@ class Wrapper {
     this.wrapper.style.transform = `translate(${this.x}px, ${this.y}px)`;
   }
   get width() {
+    if (this.options.disabledWidthResize)
+      return this.wrapper.clientWidth;
     return +(localStorage.getItem(this.localStoragePrefix + "width") ?? "256");
   }
   set width(value) {
+    if (this.options.disabledWidthResize)
+      return;
     localStorage.setItem(this.localStoragePrefix + "width", value.toString());
     this.wrapper.style.width = `${value}px`;
   }
+  get height() {
+    if (this.options.disabledHeightResize)
+      return this.wrapper.clientHeight;
+    return +(localStorage.getItem(this.localStoragePrefix + "height") ?? "256");
+  }
+  set height(value) {
+    if (this.options.disabledHeightResize)
+      return;
+    localStorage.setItem(this.localStoragePrefix + "height", value.toString());
+    this.wrapper.style.height = `${value}px`;
+  }
   wrapper = document.createElement("div");
-  constructor(element, localStoragePrefix) {
+  constructor(element, localStoragePrefix, options = {}) {
     this.element = element;
     this.localStoragePrefix = localStoragePrefix;
+    this.options = options;
     this.wrapper.classList.add("wbot-wrapper");
     this.wrapper.innerHTML = wrapper_default;
     document.body.append(this.wrapper);
     this.wrapper.append(this.element);
     this.wrapper.style.transform = `translate(${this.x}px, ${this.y}px)`;
-    this.wrapper.style.width = `${this.width}px`;
+    if (this.options.disabledWidthResize) {
+      this.wrapper.querySelector(".resize.ne")?.remove();
+      this.wrapper.querySelector(".resize.e")?.remove();
+      this.wrapper.querySelector(".resize.se")?.remove();
+      this.wrapper.querySelector(".resize.w")?.remove();
+      this.wrapper.querySelector(".resize.sw")?.remove();
+      this.wrapper.querySelector(".resize.nw")?.remove();
+    } else
+      this.wrapper.style.width = `${this.width}px`;
+    if (this.options.disabledHeightResize) {
+      this.wrapper.querySelector(".resize.ne")?.remove();
+      this.wrapper.querySelector(".resize.n")?.remove();
+      this.wrapper.querySelector(".resize.se")?.remove();
+      this.wrapper.querySelector(".resize.s")?.remove();
+      this.wrapper.querySelector(".resize.sw")?.remove();
+      this.wrapper.querySelector(".resize.nw")?.remove();
+    } else
+      this.wrapper.style.height = `${this.height}px`;
     const $move = this.wrapper.querySelector(".move");
-    const $resize = this.wrapper.querySelector(".resize");
+    const $resizes = this.wrapper.querySelectorAll(".resize");
     const $minimize = this.wrapper.querySelector(".minimize");
     $move.addEventListener("mousedown", (event) => {
       if (event.target === $move)
@@ -68,9 +170,10 @@ class Wrapper {
     $move.addEventListener("wheel", (event) => {
       this.wheel(event.deltaY);
     });
-    $resize.addEventListener("mousedown", (event) => {
-      this.moveStart(event.clientX, event.clientY, true);
-    });
+    for (const $resize of $resizes)
+      $resize.addEventListener("mousedown", (event) => {
+        this.moveStart(event.clientX, event.clientY, $resize.className.split(" ").at(-1));
+      });
     $minimize.addEventListener("click", () => {
       this.minimize();
     });
@@ -91,7 +194,9 @@ class Wrapper {
       y: this.y,
       originalX: x,
       originalY: y,
-      width: resize ? this.width : undefined
+      width: this.width,
+      height: this.height,
+      resize
     };
   }
   moveStop() {
@@ -100,8 +205,19 @@ class Wrapper {
   move(x, y) {
     if (!this.moveInfo)
       return;
-    if (this.moveInfo.width) {
-      this.width = this.moveInfo.width + x - this.moveInfo.originalX;
+    if (this.moveInfo.resize) {
+      if (this.moveInfo.resize.includes("w")) {
+        this.x = this.moveInfo.x + x - this.moveInfo.originalX;
+        this.width = this.moveInfo.width - this.x + this.moveInfo.x;
+      }
+      if (this.moveInfo.resize.includes("n")) {
+        this.y = this.moveInfo.y + y - this.moveInfo.originalY;
+        this.height = this.moveInfo.height - this.y + this.moveInfo.y;
+      }
+      if (this.moveInfo.resize.includes("e"))
+        this.width = this.moveInfo.width + x - this.moveInfo.originalX;
+      if (this.moveInfo.resize.includes("s"))
+        this.height = this.moveInfo.height + y - this.moveInfo.originalY;
     } else {
       this.x = this.moveInfo.x + x - this.moveInfo.originalX;
       this.y = this.moveInfo.y + y - this.moveInfo.originalY;
@@ -114,7 +230,7 @@ class Wrapper {
 
 // src/overlay.ts
 class Overlay extends Wrapper {
-  parent;
+  bot;
   get x() {
     return +(localStorage.getItem(this.localStoragePrefix + "x") ?? "64");
   }
@@ -136,6 +252,12 @@ class Overlay extends Wrapper {
     localStorage.setItem(this.localStoragePrefix + "width", value.toString());
     this.update();
   }
+  get height() {
+    return this.wrapper.clientHeight;
+  }
+  set height(value) {
+    this.width = this.width / this.height * value;
+  }
   get cx() {
     return +(localStorage.getItem("wbot_cx") ?? "0");
   }
@@ -150,17 +272,20 @@ class Overlay extends Wrapper {
     localStorage.setItem("wbot_cy", value.toString());
     this.update();
   }
-  constructor(parent) {
+  constructor(bot) {
     super(document.createElement("canvas"), "wbot_overlay_");
-    this.parent = parent;
+    this.bot = bot;
+    this.wrapper.style.removeProperty("height");
     this.element.classList.add("wbot-overlay");
     this.wrapper.classList.add("hidden");
     this.element.addEventListener("click", (event) => {
-      this.click(event.clientX, event.clientY);
+      this.setCursor(event.clientX, event.clientY);
     });
   }
   getPixelSize() {
-    return this.parent.pixels.length === 0 ? 0 : this.width / this.parent.pixels[0].length;
+    if (this.bot.pixels.length === 0)
+      throw new NoImageError(this.bot);
+    return this.width / this.bot.pixels[0].length;
   }
   update() {
     this.wrapper.style.width = `${this.width}px`;
@@ -170,11 +295,11 @@ class Overlay extends Wrapper {
     const pixelSize = this.getPixelSize();
     if (pixelSize === 0)
       return;
-    this.element.width = pixelSize * this.parent.pixels[0].length;
-    this.element.height = pixelSize * this.parent.pixels.length;
+    this.element.width = pixelSize * this.bot.pixels[0].length;
+    this.element.height = pixelSize * this.bot.pixels.length;
     context.strokeStyle = `red`;
-    for (let y = 0;y < this.parent.pixels.length; y++) {
-      const row = this.parent.pixels[y];
+    for (let y = 0;y < this.bot.pixels.length; y++) {
+      const row = this.bot.pixels[y];
       for (let x = 0;x < row.length; x++) {
         const pixel = row[x];
         context.fillStyle = `rgb(${pixel.r} ${pixel.g} ${pixel.b})`;
@@ -187,16 +312,56 @@ class Overlay extends Wrapper {
     context.fillRect(this.cx * pixelSize, 0, pixelSize, this.element.height);
     context.fillRect(0, this.cy * pixelSize, this.element.width, pixelSize);
   }
-  click(x, y) {
+  async align() {
+    const pixelsWidth = this.bot.pixels[0]?.length;
+    if (!pixelsWidth)
+      return;
+    const getPixelPosition = () => {
+      const data = document.querySelector(".whitespace-nowrap").textContent.slice(7).split(", ");
+      return {
+        x: +data[0],
+        y: +data[1]
+      };
+    };
+    const getMarkerPosition = () => {
+      const marker = document.querySelector(".maplibregl-marker.z-20");
+      if (!marker)
+        throw new NoMarkerError(this.bot);
+      const rect = marker.getBoundingClientRect();
+      return {
+        x: rect.width / 2 + rect.left,
+        y: rect.bottom
+      };
+    };
+    const distance = (a, b) => {
+      const direct = Math.abs(a - b);
+      return Math.min(direct, 4000 - direct);
+    };
+    const markerPos1 = getMarkerPosition();
+    const pixelPos1 = getPixelPosition();
+    this.bot.widget.status = "❌ Unfocus window!";
+    await waitForUnfocus();
+    this.bot.widget.status = "⌛ Aligning...";
+    this.bot.canvas.dispatchEvent(new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      clientX: window.innerWidth - 1,
+      clientY: markerPos1.y,
+      button: 0
+    }));
+    await wait(1);
+    const markerPos2 = getMarkerPosition();
+    const pixelPos2 = getPixelPosition();
+    const pixelSize = (markerPos2.x - markerPos1.x) / distance(pixelPos2.x, pixelPos1.x);
+    this.bot.overlay.x = markerPos1.x - pixelSize / 2;
+    this.bot.overlay.y = markerPos1.y - 16 - 7;
+    this.bot.overlay.width = pixelsWidth * pixelSize;
+  }
+  setCursor(x, y) {
     const pixelSize = this.getPixelSize();
     this.cx = (x - this.x) / pixelSize | 0;
     this.cy = (y - (this.y + 16)) / pixelSize | 0;
   }
-}
-
-// src/utilities.ts
-function wait(time) {
-  return new Promise((resolve) => setTimeout(resolve, time));
 }
 
 // src/widget.html
@@ -204,20 +369,28 @@ var widget_default = `<button class="select-image">Select image</button>
 <button class="draw" disabled>Draw</button>
 <button class="timer">Set timer</button>
 <div class="colors"></div>
-<marquee class="wstatus">Set marker and select image</marquee>
+<label>Scale:&nbsp;<input class="scale" type="number" ></label>
+<div class="wstatus">✅ Place marker and press "Select image"</div>
 `;
 
 // src/widget.ts
 class Widget extends Wrapper {
-  parent;
-  constructor(parent) {
-    super(document.createElement("div"), "wbot_widget_");
-    this.parent = parent;
+  bot;
+  constructor(bot) {
+    super(document.createElement("div"), "wbot_widget_", {
+      disabledHeightResize: true
+    });
+    this.bot = bot;
     this.element.classList.add("wbot-widget");
     this.element.innerHTML = widget_default;
-    this.element.querySelector(".select-image").addEventListener("click", () => this.parent.selectImage());
-    this.element.querySelector(".draw").addEventListener("click", () => this.parent.draw());
+    this.element.querySelector(".select-image").addEventListener("click", () => this.bot.selectImage());
+    this.element.querySelector(".draw").addEventListener("click", () => this.bot.draw());
     this.element.querySelector(".timer").addEventListener("click", () => this.timer());
+    const $scale = this.element.querySelector(".scale");
+    $scale.addEventListener("change", () => {
+      this.bot.scale = $scale.value;
+    });
+    $scale.value = this.bot.scale;
   }
   get status() {
     return this.element.querySelector(".wstatus").innerHTML;
@@ -226,6 +399,7 @@ class Widget extends Wrapper {
     this.element.querySelector(".wstatus").innerHTML = value;
   }
   async timer() {
+    this.status = "⌛ Setting timer...";
     const $timer = this.element.querySelector(".timer");
     try {
       $timer.disabled = true;
@@ -233,16 +407,19 @@ class Widget extends Wrapper {
         credentials: "include"
       }).then((x) => x.json());
       const time = Date.now() + (me.charges.max - me.charges.count) * me.charges.cooldownMs;
+      this.status = "✅ Timer set!";
       while (true) {
         const left = time - Date.now();
         if (left <= 0) {
           new Audio("https://www.myinstants.com/media/sounds/winnerchickendinner.mp3").play();
-          this.parent.draw();
+          this.bot.draw();
           break;
         }
         $timer.textContent = `${left / 60000 | 0}:${left % 60000 / 1000 | 0}`;
         await wait(1000);
       }
+    } catch {
+      throw new ApiError(this.bot);
     } finally {
       $timer.disabled = false;
       $timer.textContent = "Set timer";
@@ -251,50 +428,35 @@ class Widget extends Wrapper {
   setDisabled(name, disabled) {
     this.element.querySelector("." + name).disabled = disabled;
   }
-  async align() {
-    const pixelsWidth = this.parent.pixels[0]?.length;
-    if (!pixelsWidth)
-      return;
-    function getPixelPosition() {
-      const data = document.querySelector(".whitespace-nowrap").textContent.slice(7).split(", ");
-      return {
-        x: +data[0],
-        y: +data[1]
-      };
+  setColorsToBuy(colorsToBuy) {
+    let sum = 0;
+    for (let index = 0;index < colorsToBuy.length; index++)
+      sum += colorsToBuy[index][1];
+    const $colors = this.element.querySelector(".colors");
+    $colors.innerHTML = "";
+    for (let index = 0;index < colorsToBuy.length; index++) {
+      const [color, amount] = colorsToBuy[index];
+      const $div = document.createElement("button");
+      $colors.append($div);
+      $div.style.backgroundColor = `rgb(${color.r} ${color.g} ${color.b})`;
+      $div.style.width = amount / sum * 100 + "%";
+      $div.addEventListener("click", () => {
+        color.button.click();
+      });
     }
-    function getMarkerPosition() {
-      const marker = document.querySelector(".maplibregl-marker.z-20");
-      if (!marker)
-        throw new Error("NO_MARKER");
-      const rect = marker.getBoundingClientRect();
-      return {
-        x: rect.width / 2 + rect.left,
-        y: rect.bottom
-      };
-    }
-    function distance(a, b) {
-      const direct = Math.abs(a - b);
-      return Math.min(direct, 4000 - direct);
-    }
-    const markerPos1 = getMarkerPosition();
-    const pixelPos1 = getPixelPosition();
-    await this.parent.clickCanvas(window.innerWidth - 1, markerPos1.y);
-    const markerPos2 = getMarkerPosition();
-    const pixelPos2 = getPixelPosition();
-    const pixelSize = (markerPos2.x - markerPos1.x) / distance(pixelPos2.x, pixelPos1.x);
-    this.parent.overlay.x = markerPos1.x - pixelSize / 2;
-    this.parent.overlay.y = markerPos1.y - 16 - 7;
-    this.parent.overlay.width = pixelsWidth * pixelSize;
   }
 }
 
 // src/bot.ts
 class WPlaceBot {
+  _canvas;
+  get canvas() {
+    this._canvas ??= document.querySelector(".maplibregl-canvas");
+    return this._canvas;
+  }
   image;
   colors = [];
   pixels = [[]];
-  overlayEdit;
-  widgetEdit;
   widget = new Widget(this);
   overlay = new Overlay(this);
   get scale() {
@@ -302,10 +464,12 @@ class WPlaceBot {
   }
   set scale(value) {
     localStorage.setItem("wbot_scale", value.toString());
+    this.widget.element.querySelector(".scale").value = value;
+    this.processImage();
   }
   selectImage() {
     if (!document.querySelector(".maplibregl-marker.z-20"))
-      return;
+      throw new NoMarkerError(this);
     this.widget.setDisabled("select-image", true);
     return new Promise((resolve, reject) => {
       const input = document.createElement("input");
@@ -314,7 +478,7 @@ class WPlaceBot {
       input.addEventListener("change", () => {
         const file = input.files?.[0];
         if (!file) {
-          reject(new Error("NO_FILE"));
+          reject(new NoImageError(this));
           return;
         }
         const reader = new FileReader;
@@ -324,9 +488,11 @@ class WPlaceBot {
           this.image.addEventListener("load", async () => {
             try {
               this.processImage();
-              await this.widget.align();
+              await this.overlay.align();
               await this.updateColors();
-              this.widget.status = "Ready to draw!";
+              this.widget.status = "✅ Ready to draw!";
+              this.widget.setDisabled("draw", false);
+              this.overlay.wrapper.classList.remove("hidden");
               resolve();
             } catch (error) {
               reject(error);
@@ -338,7 +504,7 @@ class WPlaceBot {
         reader.readAsDataURL(file);
       });
       input.addEventListener("cancel", () => {
-        reject(new Error("CANCEL"));
+        reject(new NoImageError(this));
       });
       input.click();
     }).finally(() => {
@@ -346,7 +512,7 @@ class WPlaceBot {
     });
   }
   async draw() {
-    this.widget.status = "Drawing";
+    this.widget.status = "⌛ Drawing...";
     try {
       await this.updateColors();
       this.overlay.element.classList.add("disabled");
@@ -359,7 +525,16 @@ class WPlaceBot {
           pixel.button.click();
           await wait(1);
           const pixelSize = this.overlay.getPixelSize();
-          await this.clickCanvas(this.overlay.x + this.overlay.cx * pixelSize + pixelSize / 2, this.overlay.y + 16 + this.overlay.cy * pixelSize + pixelSize / 2);
+          this.canvas.dispatchEvent(new MouseEvent("mousemove", {
+            bubbles: true,
+            clientX: this.overlay.x + this.overlay.cx * pixelSize + pixelSize / 2,
+            clientY: this.overlay.y + 16 + this.overlay.cy * pixelSize + pixelSize / 2
+          }));
+          await wait(1);
+          this.canvas.dispatchEvent(new KeyboardEvent("keydown", SPACE_EVENT));
+          await wait(1);
+          this.canvas.dispatchEvent(new KeyboardEvent("keyup", SPACE_EVENT));
+          await wait(1);
           if (document.querySelector("ol"))
             return;
         }
@@ -368,19 +543,8 @@ class WPlaceBot {
     } finally {
       this.overlay.element.classList.remove("disabled");
       this.widget.setDisabled("draw", false);
-      this.widget.status = 'Press "Paint" and "Set timer"';
+      this.widget.status = '✅ Press "Paint" and "Set timer"';
     }
-  }
-  async clickCanvas(clientX, clientY) {
-    await this.waitForUnfocus();
-    document.querySelector(".maplibregl-canvas").dispatchEvent(new MouseEvent("click", {
-      bubbles: true,
-      cancelable: true,
-      clientX,
-      clientY,
-      button: 0
-    }));
-    await wait(1);
   }
   async updateColors() {
     document.querySelector(".flex.gap-2.px-3 > .btn-circle")?.click();
@@ -414,42 +578,20 @@ class WPlaceBot {
         button
       };
     });
-    const colorsToBuy = new Set;
+    const colorsToBuy = new Map;
     for (let y = 0;y < this.pixels.length; y++) {
-      for (let x = 0;x < this.pixels[y].length; x++) {
+      for (let x = 0;x < this.pixels[0].length; x++) {
         const color = this.getClosestColor(this.pixels[y][x], true);
-        if (!color.available)
-          colorsToBuy.add(color);
+        if (color.available)
+          continue;
+        colorsToBuy.set(color, (colorsToBuy.get(color) ?? 0) + 1);
       }
     }
-    const $colors = this.widget.element.querySelector(".colors");
-    $colors.innerHTML = "";
-    for (const color of colorsToBuy) {
-      const $div = document.createElement("button");
-      $colors.append($div);
-      $div.style.backgroundColor = `rgb(${color.r} ${color.g} ${color.b})`;
-      $div.addEventListener("click", () => {
-        color.button.click();
-      });
-    }
-  }
-  waitForUnfocus() {
-    return new Promise((resolve) => {
-      if (!document.hasFocus())
-        resolve();
-      const origStatus = this.widget.status;
-      this.widget.status = "Unfocus window!";
-      window.addEventListener("blur", () => {
-        this.widget.status = origStatus;
-        setTimeout(resolve, 1);
-      }, {
-        once: true
-      });
-    });
+    this.widget.setColorsToBuy([...colorsToBuy.entries()].sort(([, a], [, b]) => b - a));
   }
   processImage() {
     if (!this.image)
-      throw new Error("NO_IMAGE");
+      throw new NoImageError(this);
     const imageCanvas = document.createElement("canvas");
     const imageContext = imageCanvas.getContext("2d");
     imageCanvas.width = this.image.width * this.scale / 100;
@@ -470,12 +612,10 @@ class WPlaceBot {
     }
     this.overlay.update();
     this.widget.setDisabled("select-image", false);
-    this.widget.setDisabled("draw", false);
-    this.overlay.wrapper.classList.remove("hidden");
   }
   getClosestColor({ r, g, b, a }, allowNotAvailable) {
     if (this.colors.length === 0)
-      throw new Error("NO_COLORS");
+      throw new NoColorsError(this);
     if (a < 100)
       return this.colors.at(-1);
     let minDelta = Infinity;
@@ -503,6 +643,7 @@ var style_default = `:root {
   --hover: #dfdfdf;
   --disabled: #c2c2c2;
   --text: #394e6a;
+  --resize: 4px;
 }
 
 .wbot-wrapper {
@@ -547,18 +688,62 @@ var style_default = `:root {
   background-color: var(--main-hover);
 }
 .wbot-wrapper .resize {
-  cursor: e-resize;
-  height: 100%;
-  width: 16px;
-  background-image: repeating-linear-gradient(
-    315deg,
-    var(--main),
-    var(--main) 4px,
-    var(--background) 1px,
-    var(--background) 5px
-  );
+  height: calc(100% - var(--resize) - var(--resize));
+  width: calc(100% - var(--resize) - var(--resize));
+  position: absolute;
 }
-
+.wbot-wrapper .resize.n {
+  cursor: n-resize;
+  top: 0;
+  left: var(--resize);
+  height: var(--resize);
+}
+.wbot-wrapper .resize.e {
+  cursor: e-resize;
+  top: var(--resize);
+  right: 0;
+  width: var(--resize);
+}
+.wbot-wrapper .resize.s {
+  cursor: s-resize;
+  left: var(--resize);
+  bottom: 0;
+  height: var(--resize);
+}
+.wbot-wrapper .resize.w {
+  cursor: e-resize;
+  top: var(--resize);
+  left: 0;
+  width: var(--resize);
+}
+.wbot-wrapper .resize.ne {
+  cursor: ne-resize;
+  top: 0;
+  right: 0;
+  width: var(--resize);
+  height: var(--resize);
+}
+.wbot-wrapper .resize.nw {
+  cursor: nw-resize;
+  top: 0;
+  left: 0;
+  width: var(--resize);
+  height: var(--resize);
+}
+.wbot-wrapper .resize.se {
+  cursor: se-resize;
+  right: 0;
+  bottom: 0;
+  width: var(--resize);
+  height: var(--resize);
+}
+.wbot-wrapper .resize.sw {
+  cursor: sw-resize;
+  left: 0;
+  bottom: 0;
+  width: var(--resize);
+  height: var(--resize);
+}
 .wbot-overlay {
   box-shadow: 0px 0px 0px 1px var(--main) inset;
 }
@@ -579,8 +764,16 @@ var style_default = `:root {
   height: 32px;
   cursor: pointer;
 }
+.wbot-widget label {
+  display: flex;
+  padding: 0 8px;
+}
 .wbot-widget .wstatus {
   width: 100%;
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .hidden {

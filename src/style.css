@@ -6,6 +6,7 @@
   --hover: #dfdfdf;
   --disabled: #c2c2c2;
   --text: #394e6a;
+  --resize: 4px;
 }
 
 .wbot-wrapper {
@@ -50,18 +51,62 @@
   background-color: var(--main-hover);
 }
 .wbot-wrapper .resize {
-  cursor: e-resize;
-  height: 100%;
-  width: 16px;
-  background-image: repeating-linear-gradient(
-    315deg,
-    var(--main),
-    var(--main) 4px,
-    var(--background) 1px,
-    var(--background) 5px
-  );
+  height: calc(100% - var(--resize) - var(--resize));
+  width: calc(100% - var(--resize) - var(--resize));
+  position: absolute;
 }
-
+.wbot-wrapper .resize.n {
+  cursor: n-resize;
+  top: 0;
+  left: var(--resize);
+  height: var(--resize);
+}
+.wbot-wrapper .resize.e {
+  cursor: e-resize;
+  top: var(--resize);
+  right: 0;
+  width: var(--resize);
+}
+.wbot-wrapper .resize.s {
+  cursor: s-resize;
+  left: var(--resize);
+  bottom: 0;
+  height: var(--resize);
+}
+.wbot-wrapper .resize.w {
+  cursor: e-resize;
+  top: var(--resize);
+  left: 0;
+  width: var(--resize);
+}
+.wbot-wrapper .resize.ne {
+  cursor: ne-resize;
+  top: 0;
+  right: 0;
+  width: var(--resize);
+  height: var(--resize);
+}
+.wbot-wrapper .resize.nw {
+  cursor: nw-resize;
+  top: 0;
+  left: 0;
+  width: var(--resize);
+  height: var(--resize);
+}
+.wbot-wrapper .resize.se {
+  cursor: se-resize;
+  right: 0;
+  bottom: 0;
+  width: var(--resize);
+  height: var(--resize);
+}
+.wbot-wrapper .resize.sw {
+  cursor: sw-resize;
+  left: 0;
+  bottom: 0;
+  width: var(--resize);
+  height: var(--resize);
+}
 .wbot-overlay {
   box-shadow: 0px 0px 0px 1px var(--main) inset;
 }
@@ -82,8 +127,16 @@
   height: 32px;
   cursor: pointer;
 }
+.wbot-widget label {
+  display: flex;
+  padding: 0 8px;
+}
 .wbot-widget .wstatus {
   width: 100%;
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .hidden {
