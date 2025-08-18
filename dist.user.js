@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         wplace-bot
 // @namespace    https://github.com/SoundOfTheSky
-// @version      2.1.0
+// @version      3.0.0
 // @description  Bot to automate painting on website https://wplace.live
 // @author       SoundOfTheSky
 // @license      MPL-2.0
@@ -18,7 +18,7 @@
 
 // src/errors.ts
 class WPlaceBotError extends Error {
-  name = "ValidationError";
+  name = "WPlaceBotError";
   constructor(message, bot) {
     super(message);
     bot.widget.status = message;
@@ -39,17 +39,97 @@ class NoImageError extends WPlaceBotError {
   }
 }
 
-class NoColorsError extends WPlaceBotError {
-  name = "NoColorsError";
+// src/overlay.ts
+class Overlay {
+  bot;
+  element = document.createElement("canvas");
+  context = this.element.getContext("2d");
+  opacity = 50;
   constructor(bot) {
-    super("❌ Can not read colors panel", bot);
+    this.bot = bot;
+    document.body.append(this.element);
+    this.element.classList.add("wbot-overlay");
+    this.update();
+  }
+  update() {
+    if (!this.bot.image || this.bot.pixelSize === 0 || !this.bot.startScreenPosition) {
+      this.element.classList.add("hidden");
+      return;
+    }
+    this.element.classList.remove("hidden");
+    this.element.style.transform = `translate(${this.bot.startScreenPosition.x}px, ${this.bot.startScreenPosition.y}px)`;
+    this.element.width = this.bot.pixelSize * this.bot.image.pixels[0].length;
+    this.element.height = this.bot.pixelSize * this.bot.image.pixels.length;
+    this.context.clearRect(0, 0, this.element.width, this.element.height);
+    for (let y = 0;y < this.bot.image.pixels.length; y++) {
+      const row = this.bot.image.pixels[y];
+      for (let x = 0;x < row.length; x++) {
+        const pixel = row[x];
+        this.context.fillStyle = `rgb(${pixel.r} ${pixel.g} ${pixel.b})`;
+        this.context.globalAlpha = pixel.a / 255 * (this.opacity / 100);
+        this.context.fillRect(x * this.bot.pixelSize, y * this.bot.pixelSize, this.bot.pixelSize, this.bot.pixelSize);
+      }
+    }
   }
 }
 
-class ApiError extends WPlaceBotError {
-  name = "ApiError";
-  constructor(bot) {
-    super("❌ Can not connect to server", bot);
+// src/position.ts
+var TILE_SIZE = 1000;
+
+class WorldPosition {
+  tileX;
+  tileY;
+  get globalX() {
+    return this.tileX * TILE_SIZE + this.x;
+  }
+  get globalY() {
+    return this.tileY * TILE_SIZE + this.y;
+  }
+  _x;
+  get x() {
+    return this._x;
+  }
+  set x(value) {
+    if (value >= TILE_SIZE) {
+      this.tileX += value / TILE_SIZE | 0;
+      this._x = value % TILE_SIZE;
+    } else if (value < 0) {
+      this.tileX += value / TILE_SIZE + 1 | 0;
+      this._x = value % TILE_SIZE + TILE_SIZE;
+    } else
+      this._x = value;
+  }
+  _y;
+  get y() {
+    return this._y;
+  }
+  set y(value) {
+    if (value >= TILE_SIZE) {
+      this.tileY += value / TILE_SIZE | 0;
+      this._y = value % TILE_SIZE;
+    } else if (value < 0) {
+      this.tileY += value / TILE_SIZE + 1 | 0;
+      this._y = value % TILE_SIZE + TILE_SIZE;
+    } else
+      this._y = value;
+  }
+  constructor(tileX, tileY, x, y) {
+    this.tileX = tileX;
+    this.tileY = tileY;
+    this.x = x;
+    this.y = y;
+  }
+  toScreenPosition(startScreenPosition, startPosition, pixelSize) {
+    return {
+      x: (this.globalX - startPosition.globalX) * pixelSize + startScreenPosition.x + pixelSize / 2,
+      y: (this.globalY - startPosition.globalY) * pixelSize + startScreenPosition.y + pixelSize / 2
+    };
+  }
+  clone() {
+    return new WorldPosition(this.tileX, this.tileY, this.x, this.y);
+  }
+  toJSON() {
+    return [this.tileX, this.tileY, this.x, this.y];
   }
 }
 
@@ -65,117 +145,170 @@ var SPACE_EVENT = {
   bubbles: true,
   cancelable: true
 };
-function waitForUnfocus() {
-  return new Promise((resolve) => {
-    if (!document.hasFocus())
-      resolve();
-    window.addEventListener("blur", () => {
-      setTimeout(resolve, 1);
-    }, {
-      once: true
-    });
+function promisify(target, resolveEvents, rejectEvents) {
+  return new Promise((resolve, reject) => {
+    for (let index = 0;index < resolveEvents.length; index++)
+      target.addEventListener(resolveEvents[index], resolve);
+    for (let index = 0;index < rejectEvents.length; index++)
+      target.addEventListener(rejectEvents[index], reject);
   });
 }
 
-// src/wrapper.html
-var wrapper_default = `<div class="move">
+// src/pixels.ts
+class Pixels {
+  image;
+  colors;
+  scale;
+  pixels;
+  colorsToBuy;
+  constructor(image, colors, scale = 100) {
+    this.image = image;
+    this.colors = colors;
+    this.scale = scale;
+    this.update();
+  }
+  static async fromSelectImage(bot, colors, scale) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.click();
+    await promisify(input, ["change"], ["cancel", "error"]);
+    const file = input.files?.[0];
+    if (!file)
+      throw new NoImageError(bot);
+    const reader = new FileReader;
+    reader.readAsDataURL(file);
+    await promisify(reader, ["load"], ["error"]);
+    const image = new Image;
+    image.src = reader.result;
+    await promisify(image, ["load"], ["error"]);
+    return new Pixels(image, colors, scale);
+  }
+  static async fromURL(url, colors, scale) {
+    const image = new Image;
+    image.src = await fetch(url).then((x) => x.blob()).then((x) => URL.createObjectURL(x));
+    try {
+      await promisify(image, ["load"], ["error"]);
+    } catch {
+      const canvas = document.createElement("canvas");
+      canvas.width = TILE_SIZE;
+      canvas.height = TILE_SIZE;
+      image.src = canvas.toDataURL("image/png");
+    }
+    return new Pixels(image, colors, scale);
+  }
+  update() {
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    const colorsToBuy = new Map;
+    const scale = this.scale / 100;
+    canvas.width = this.image.width * scale;
+    canvas.height = this.image.height * scale;
+    context.drawImage(this.image, 0, 0, canvas.width, canvas.height);
+    this.pixels = Array.from({ length: canvas.height }, () => new Array(canvas.width));
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let y = 0;y < canvas.height; y++) {
+      for (let x = 0;x < canvas.width; x++) {
+        const index = (y * canvas.width + x) * 4;
+        const r = data[index];
+        const g = data[index + 1];
+        const b = data[index + 2];
+        const a = data[index + 3];
+        if (a < 100) {
+          this.pixels[y][x] = this.colors.at(-1);
+          continue;
+        }
+        let minDelta = Infinity;
+        let min;
+        let minDeltaReal = Infinity;
+        let minReal;
+        for (let index2 = 0;index2 < this.colors.length; index2++) {
+          const color = this.colors[index2];
+          if (color.available) {
+            const delta2 = Math.abs(color.r - r) + Math.abs(color.g - g) + Math.abs(color.b - b);
+            if (delta2 < minDelta) {
+              minDelta = delta2;
+              min = color;
+            }
+          }
+          const delta = Math.abs(color.r - r) + Math.abs(color.g - g) + Math.abs(color.b - b);
+          if (delta < minDeltaReal) {
+            minDeltaReal = delta;
+            minReal = color;
+          }
+        }
+        this.pixels[y][x] = min;
+        if (minReal.buttonId !== min.buttonId)
+          colorsToBuy.set(minReal, (colorsToBuy.get(minReal) ?? 0) + 1);
+      }
+    }
+    this.colorsToBuy = [...colorsToBuy.entries()].sort(([, a], [, b]) => b - a);
+  }
+  toJSON() {
+    const canvas = document.createElement("canvas");
+    canvas.width = this.image.naturalWidth;
+    canvas.height = this.image.naturalHeight;
+    const context = canvas.getContext("2d");
+    context.drawImage(this.image, 0, 0);
+    return canvas.toDataURL("image/webp", 1);
+  }
+}
+
+// src/widget.html
+var widget_default = `<div class="move">
   <button class="minimize">🗕</button>
 </div>
-<div class="resize n"></div>
-<div class="resize e"></div>
-<div class="resize s"></div>
-<div class="resize w"></div>
-<div class="resize ne"></div>
-<div class="resize nw"></div>
-<div class="resize se"></div>
-<div class="resize sw"></div>`;
+<div class="content">
+  <button class="select-image">Select image</button>
+  <button class="draw" disabled>Draw</button>
+  <button class="timer">Set timer</button>
+  <label>Scale:&nbsp;<input class="scale" type="number" >%</label>
+  <label>Opacity:&nbsp;<input class="opacity" type="range" min="0" max="100"></label>
+  <div class="colors"></div>
+  <div class="eta">ETA: <span class="value"></span></div>
+  <div class="progress">Progress: <span class="value"></span></div>
+  <progress max="100"></progress>
+  <div class="wstatus"></div>
+</div>
 
-// src/wrapper.ts
-class Wrapper {
-  element;
-  localStoragePrefix;
-  options;
+`;
+
+// src/widget.ts
+class Widget {
+  bot;
+  x = 64;
+  y = 64;
+  get status() {
+    return this.element.querySelector(".wstatus").innerHTML;
+  }
+  set status(value) {
+    this.element.querySelector(".wstatus").innerHTML = value;
+  }
+  get disabledScreen() {
+    return this.disableScreenElement.classList.contains("hidden");
+  }
+  set disabledScreen(value) {
+    if (value)
+      this.disableScreenElement.classList.remove("hidden");
+    else
+      this.disableScreenElement.classList.add("hidden");
+  }
+  element = document.createElement("div");
+  disableScreenElement = document.createElement("div");
   moveInfo;
-  get x() {
-    return +(localStorage.getItem(this.localStoragePrefix + "x") ?? "64");
-  }
-  set x(value) {
-    localStorage.setItem(this.localStoragePrefix + "x", value.toString());
-    this.wrapper.style.transform = `translate(${this.x}px, ${this.y}px)`;
-  }
-  get y() {
-    return +(localStorage.getItem(this.localStoragePrefix + "y") ?? "64");
-  }
-  set y(value) {
-    localStorage.setItem(this.localStoragePrefix + "y", value.toString());
-    this.wrapper.style.transform = `translate(${this.x}px, ${this.y}px)`;
-  }
-  get width() {
-    if (this.options.disabledWidthResize)
-      return this.wrapper.clientWidth;
-    return +(localStorage.getItem(this.localStoragePrefix + "width") ?? "256");
-  }
-  set width(value) {
-    if (this.options.disabledWidthResize)
-      return;
-    localStorage.setItem(this.localStoragePrefix + "width", value.toString());
-    this.wrapper.style.width = `${value}px`;
-  }
-  get height() {
-    if (this.options.disabledHeightResize)
-      return this.wrapper.clientHeight;
-    return +(localStorage.getItem(this.localStoragePrefix + "height") ?? "256");
-  }
-  set height(value) {
-    if (this.options.disabledHeightResize)
-      return;
-    localStorage.setItem(this.localStoragePrefix + "height", value.toString());
-    this.wrapper.style.height = `${value}px`;
-  }
-  wrapper = document.createElement("div");
-  constructor(element, localStoragePrefix, options = {}) {
-    this.element = element;
-    this.localStoragePrefix = localStoragePrefix;
-    this.options = options;
-    this.wrapper.classList.add("wbot-wrapper");
-    this.wrapper.innerHTML = wrapper_default;
-    document.body.append(this.wrapper);
-    this.wrapper.append(this.element);
-    this.wrapper.style.transform = `translate(${this.x}px, ${this.y}px)`;
-    if (this.options.disabledWidthResize) {
-      this.wrapper.querySelector(".resize.ne")?.remove();
-      this.wrapper.querySelector(".resize.e")?.remove();
-      this.wrapper.querySelector(".resize.se")?.remove();
-      this.wrapper.querySelector(".resize.w")?.remove();
-      this.wrapper.querySelector(".resize.sw")?.remove();
-      this.wrapper.querySelector(".resize.nw")?.remove();
-    } else
-      this.wrapper.style.width = `${this.width}px`;
-    if (this.options.disabledHeightResize) {
-      this.wrapper.querySelector(".resize.ne")?.remove();
-      this.wrapper.querySelector(".resize.n")?.remove();
-      this.wrapper.querySelector(".resize.se")?.remove();
-      this.wrapper.querySelector(".resize.s")?.remove();
-      this.wrapper.querySelector(".resize.sw")?.remove();
-      this.wrapper.querySelector(".resize.nw")?.remove();
-    } else
-      this.wrapper.style.height = `${this.height}px`;
-    const $move = this.wrapper.querySelector(".move");
-    const $resizes = this.wrapper.querySelectorAll(".resize");
-    const $minimize = this.wrapper.querySelector(".minimize");
-    $move.addEventListener("mousedown", (event) => {
-      if (event.target === $move)
-        this.moveStart(event.clientX, event.clientY);
-    });
-    $move.addEventListener("wheel", (event) => {
-      this.wheel(event.deltaY);
-    });
-    for (const $resize of $resizes)
-      $resize.addEventListener("mousedown", (event) => {
-        this.moveStart(event.clientX, event.clientY, $resize.className.split(" ").at(-1));
-      });
-    $minimize.addEventListener("click", () => {
+  constructor(bot) {
+    this.bot = bot;
+    this.element.classList.add("wbot-widget");
+    this.disableScreenElement.classList.add("wbot-disable-screen", "hidden");
+    document.body.append(this.element);
+    document.body.append(this.disableScreenElement);
+    this.element.innerHTML = widget_default;
+    this.element.querySelector(".minimize").addEventListener("click", () => {
       this.minimize();
+    });
+    const $move = this.element.querySelector(".move");
+    $move.addEventListener("mousedown", (event) => {
+      this.moveStart(event.clientX, event.clientY);
     });
     document.addEventListener("mouseup", () => {
       this.moveStop();
@@ -183,231 +316,32 @@ class Wrapper {
     document.addEventListener("mousemove", (event) => {
       if (this.moveInfo)
         this.move(event.clientX, event.clientY);
+      this.element.style.transform = `translate(${this.x}px, ${this.y}px)`;
     });
-  }
-  minimize() {
-    this.element.classList.toggle("hidden");
-  }
-  moveStart(x, y, resize) {
-    this.moveInfo = {
-      x: this.x,
-      y: this.y,
-      originalX: x,
-      originalY: y,
-      width: this.width,
-      height: this.height,
-      resize
-    };
-  }
-  moveStop() {
-    this.moveInfo = undefined;
-  }
-  move(x, y) {
-    if (!this.moveInfo)
-      return;
-    if (this.moveInfo.resize) {
-      if (this.moveInfo.resize.includes("w")) {
-        this.x = this.moveInfo.x + x - this.moveInfo.originalX;
-        this.width = this.moveInfo.width - this.x + this.moveInfo.x;
-      }
-      if (this.moveInfo.resize.includes("n")) {
-        this.y = this.moveInfo.y + y - this.moveInfo.originalY;
-        this.height = this.moveInfo.height - this.y + this.moveInfo.y;
-      }
-      if (this.moveInfo.resize.includes("e"))
-        this.width = this.moveInfo.width + x - this.moveInfo.originalX;
-      if (this.moveInfo.resize.includes("s"))
-        this.height = this.moveInfo.height + y - this.moveInfo.originalY;
-    } else {
-      this.x = this.moveInfo.x + x - this.moveInfo.originalX;
-      this.y = this.moveInfo.y + y - this.moveInfo.originalY;
-    }
-  }
-  wheel(deltaY) {
-    this.width += deltaY < 0 ? 1 : -1;
-  }
-}
-
-// src/overlay.ts
-class Overlay extends Wrapper {
-  bot;
-  get x() {
-    return +(localStorage.getItem(this.localStoragePrefix + "x") ?? "64");
-  }
-  set x(value) {
-    localStorage.setItem(this.localStoragePrefix + "x", value.toString());
-    this.update();
-  }
-  get y() {
-    return +(localStorage.getItem(this.localStoragePrefix + "y") ?? "64");
-  }
-  set y(value) {
-    localStorage.setItem(this.localStoragePrefix + "y", value.toString());
-    this.update();
-  }
-  get width() {
-    return +(localStorage.getItem(this.localStoragePrefix + "width") ?? "256");
-  }
-  set width(value) {
-    localStorage.setItem(this.localStoragePrefix + "width", value.toString());
-    this.update();
-  }
-  get height() {
-    return this.wrapper.clientHeight;
-  }
-  set height(value) {
-    this.width = this.width / this.height * value;
-  }
-  get cx() {
-    return +(localStorage.getItem("wbot_cx") ?? "0");
-  }
-  set cx(value) {
-    localStorage.setItem("wbot_cx", value.toString());
-    this.update();
-  }
-  get cy() {
-    return +(localStorage.getItem("wbot_cy") ?? "0");
-  }
-  set cy(value) {
-    localStorage.setItem("wbot_cy", value.toString());
-    this.update();
-  }
-  constructor(bot) {
-    super(document.createElement("canvas"), "wbot_overlay_");
-    this.bot = bot;
-    this.wrapper.style.removeProperty("height");
-    this.element.classList.add("wbot-overlay");
-    this.wrapper.classList.add("hidden");
-    this.element.addEventListener("click", (event) => {
-      this.setCursor(event.clientX, event.clientY);
-    });
-  }
-  getPixelSize() {
-    if (this.bot.pixels.length === 0)
-      throw new NoImageError(this.bot);
-    return this.width / this.bot.pixels[0].length;
-  }
-  update() {
-    this.wrapper.style.width = `${this.width}px`;
-    this.wrapper.style.transform = `translate(${this.x}px, ${this.y}px)`;
-    const context = this.element.getContext("2d");
-    context.clearRect(0, 0, this.element.width, this.element.height);
-    const pixelSize = this.getPixelSize();
-    if (pixelSize === 0)
-      return;
-    this.element.width = pixelSize * this.bot.pixels[0].length;
-    this.element.height = pixelSize * this.bot.pixels.length;
-    context.strokeStyle = `red`;
-    for (let y = 0;y < this.bot.pixels.length; y++) {
-      const row = this.bot.pixels[y];
-      for (let x = 0;x < row.length; x++) {
-        const pixel = row[x];
-        context.fillStyle = `rgb(${pixel.r} ${pixel.g} ${pixel.b})`;
-        context.globalAlpha = pixel.a / 510;
-        context.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
-      }
-    }
-    context.globalAlpha = 0.8;
-    context.fillStyle = `cyan`;
-    context.fillRect(this.cx * pixelSize, 0, pixelSize, this.element.height);
-    context.fillRect(0, this.cy * pixelSize, this.element.width, pixelSize);
-  }
-  async align() {
-    const pixelsWidth = this.bot.pixels[0]?.length;
-    if (!pixelsWidth)
-      return;
-    const getPixelPosition = () => {
-      const data = document.querySelector(".whitespace-nowrap").textContent.slice(7).split(", ");
-      return {
-        x: +data[0],
-        y: +data[1]
-      };
-    };
-    const getMarkerPosition = () => {
-      const marker = document.querySelector(".maplibregl-marker.z-20");
-      if (!marker)
-        throw new NoMarkerError(this.bot);
-      const rect = marker.getBoundingClientRect();
-      return {
-        x: rect.width / 2 + rect.left,
-        y: rect.bottom
-      };
-    };
-    const distance = (a, b) => {
-      const direct = Math.abs(a - b);
-      return Math.min(direct, 4000 - direct);
-    };
-    const markerPos1 = getMarkerPosition();
-    const pixelPos1 = getPixelPosition();
-    this.bot.widget.status = "❌ Unfocus window!";
-    await waitForUnfocus();
-    this.bot.widget.status = "⌛ Aligning...";
-    this.bot.canvas.dispatchEvent(new MouseEvent("click", {
-      bubbles: true,
-      cancelable: true,
-      clientX: window.innerWidth - 1,
-      clientY: markerPos1.y,
-      button: 0
-    }));
-    await wait(1);
-    const markerPos2 = getMarkerPosition();
-    const pixelPos2 = getPixelPosition();
-    const pixelSize = (markerPos2.x - markerPos1.x) / distance(pixelPos2.x, pixelPos1.x);
-    this.bot.overlay.x = markerPos1.x - pixelSize / 2;
-    this.bot.overlay.y = markerPos1.y - 16 - 7;
-    this.bot.overlay.width = pixelsWidth * pixelSize;
-  }
-  setCursor(x, y) {
-    const pixelSize = this.getPixelSize();
-    this.cx = (x - this.x) / pixelSize | 0;
-    this.cy = (y - (this.y + 16)) / pixelSize | 0;
-  }
-}
-
-// src/widget.html
-var widget_default = `<button class="select-image">Select image</button>
-<button class="draw" disabled>Draw</button>
-<button class="timer">Set timer</button>
-<div class="colors"></div>
-<label>Scale:&nbsp;<input class="scale" type="number" ></label>
-<div class="wstatus">✅ Place marker and press "Select image"</div>
-`;
-
-// src/widget.ts
-class Widget extends Wrapper {
-  bot;
-  constructor(bot) {
-    super(document.createElement("div"), "wbot_widget_", {
-      disabledHeightResize: true
-    });
-    this.bot = bot;
-    this.element.classList.add("wbot-widget");
-    this.element.innerHTML = widget_default;
+    this.element.style.transform = `translate(${this.x}px, ${this.y}px)`;
     this.element.querySelector(".select-image").addEventListener("click", () => this.bot.selectImage());
     this.element.querySelector(".draw").addEventListener("click", () => this.bot.draw());
     this.element.querySelector(".timer").addEventListener("click", () => this.timer());
     const $scale = this.element.querySelector(".scale");
     $scale.addEventListener("change", () => {
-      this.bot.scale = $scale.value;
+      if (!this.bot.image)
+        return;
+      this.bot.image.scale = $scale.valueAsNumber;
+      this.bot.image.update();
+      this.bot.overlay.update();
     });
-    $scale.value = this.bot.scale;
-  }
-  get status() {
-    return this.element.querySelector(".wstatus").innerHTML;
-  }
-  set status(value) {
-    this.element.querySelector(".wstatus").innerHTML = value;
+    const $opacity = this.element.querySelector(".opacity");
+    $opacity.addEventListener("input", () => {
+      this.bot.overlay.opacity = $opacity.valueAsNumber;
+      this.bot.overlay.update();
+    });
+    this.updateText();
   }
   async timer() {
-    this.status = "⌛ Setting timer...";
     const $timer = this.element.querySelector(".timer");
+    $timer.disabled = true;
     try {
-      $timer.disabled = true;
-      const me = await fetch("https://backend.wplace.live/me", {
-        credentials: "include"
-      }).then((x) => x.json());
-      const time = Date.now() + (me.charges.max - me.charges.count) * me.charges.cooldownMs;
-      this.status = "✅ Timer set!";
+      const time = Date.now() + 1799995;
       while (true) {
         const left = time - Date.now();
         if (left <= 0) {
@@ -418,8 +352,6 @@ class Widget extends Wrapper {
         $timer.textContent = `${left / 60000 | 0}:${left % 60000 / 1000 | 0}`;
         await wait(1000);
       }
-    } catch {
-      throw new ApiError(this.bot);
     } finally {
       $timer.disabled = false;
       $timer.textContent = "Set timer";
@@ -428,356 +360,430 @@ class Widget extends Wrapper {
   setDisabled(name, disabled) {
     this.element.querySelector("." + name).disabled = disabled;
   }
-  setColorsToBuy(colorsToBuy) {
+  updateColorsToBuy() {
+    if (!this.bot.image)
+      throw new NoImageError(this.bot);
     let sum = 0;
-    for (let index = 0;index < colorsToBuy.length; index++)
-      sum += colorsToBuy[index][1];
+    for (let index = 0;index < this.bot.image.colorsToBuy.length; index++)
+      sum += this.bot.image.colorsToBuy[index][1];
     const $colors = this.element.querySelector(".colors");
     $colors.innerHTML = "";
-    for (let index = 0;index < colorsToBuy.length; index++) {
-      const [color, amount] = colorsToBuy[index];
+    for (let index = 0;index < this.bot.image.colorsToBuy.length; index++) {
+      const [color, amount] = this.bot.image.colorsToBuy[index];
       const $div = document.createElement("button");
       $colors.append($div);
       $div.style.backgroundColor = `rgb(${color.r} ${color.g} ${color.b})`;
       $div.style.width = amount / sum * 100 + "%";
       $div.addEventListener("click", () => {
-        color.button.click();
+        document.getElementById(color.buttonId)?.click();
       });
     }
+  }
+  updateText() {
+    if (this.bot.image)
+      this.updateColorsToBuy();
+    const maxTasks = this.bot.image ? this.bot.image.pixels.length * this.bot.image.pixels[0].length : 0;
+    this.element.querySelector(".scale").valueAsNumber = this.bot.image?.scale ?? 100;
+    const doneTasks = maxTasks - this.bot.tasks.length;
+    const percent = doneTasks / maxTasks * 100 | 0;
+    this.element.querySelector(".eta .value").textContent = `${this.bot.tasks.length / 120 | 0}h ${this.bot.tasks.length % 120 / 2 | 0}m`;
+    this.element.querySelector(".progress .value").textContent = `${percent}% ${doneTasks}/${maxTasks}`;
+    this.element.querySelector("progress").value = percent;
+  }
+  async runWithStatusAsync(status, run, fin, emoji = "⌛") {
+    const originalStatus = this.status;
+    this.status = `${emoji} ${status}`;
+    try {
+      const result = await run();
+      this.status = originalStatus || `✅ ${status}`;
+      return result;
+    } catch (error) {
+      if (!(error instanceof WPlaceBotError)) {
+        console.error(error);
+        this.status = `❌ ${status}`;
+      }
+      throw error;
+    } finally {
+      await fin?.();
+    }
+  }
+  minimize() {
+    this.element.querySelector(".content").classList.toggle("hidden");
+  }
+  moveStart(x, y) {
+    this.moveInfo = {
+      x: this.x,
+      y: this.y,
+      originalX: x,
+      originalY: y
+    };
+  }
+  moveStop() {
+    this.moveInfo = undefined;
+  }
+  move(x, y) {
+    if (!this.moveInfo)
+      return;
+    this.x = this.moveInfo.x + x - this.moveInfo.originalX;
+    this.y = this.moveInfo.y + y - this.moveInfo.originalY;
   }
 }
 
 // src/bot.ts
 class WPlaceBot {
-  _canvas;
-  get canvas() {
-    this._canvas ??= document.querySelector(".maplibregl-canvas");
-    return this._canvas;
-  }
-  image;
+  tasks = [];
   colors = [];
-  pixels = [[]];
+  image;
+  startPosition;
+  startScreenPosition;
+  pixelSize = 64;
+  markerPixelDataResolvers = [];
   widget = new Widget(this);
   overlay = new Overlay(this);
-  get scale() {
-    return +(localStorage.getItem("wbot_scale") ?? "100");
-  }
-  set scale(value) {
-    localStorage.setItem("wbot_scale", value.toString());
-    this.widget.element.querySelector(".scale").value = value;
-    this.processImage();
-  }
-  selectImage() {
-    if (!document.querySelector(".maplibregl-marker.z-20"))
-      throw new NoMarkerError(this);
-    this.widget.setDisabled("select-image", true);
-    return new Promise((resolve, reject) => {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = "image/*";
-      input.addEventListener("change", () => {
-        const file = input.files?.[0];
-        if (!file) {
-          reject(new NoImageError(this));
-          return;
-        }
-        const reader = new FileReader;
-        reader.addEventListener("load", () => {
-          this.image = new Image;
-          this.image.src = reader.result;
-          this.image.addEventListener("load", async () => {
-            try {
-              this.processImage();
-              await this.overlay.align();
-              await this.updateColors();
-              this.widget.status = "✅ Ready to draw!";
-              this.widget.setDisabled("draw", false);
-              this.overlay.wrapper.classList.remove("hidden");
-              resolve();
-            } catch (error) {
-              reject(error);
-            }
-          });
-          this.image.addEventListener("error", reject);
+  canvas;
+  constructor() {
+    this.registerFetchInterceptor();
+    const interval = setInterval(() => {
+      this.canvas = document.querySelector(".maplibregl-canvas") ?? undefined;
+      if (this.canvas && document.querySelector(".btn.btn-primary.btn-lg.relative.z-30 canvas")) {
+        let moving = false;
+        this.canvas.addEventListener("wheel", () => {
+          if (this.image)
+            this.onMove();
         });
-        reader.addEventListener("error", reject);
-        reader.readAsDataURL(file);
-      });
-      input.addEventListener("cancel", () => {
-        reject(new NoImageError(this));
-      });
-      input.click();
-    }).finally(() => {
+        this.canvas.addEventListener("mousedown", (event) => {
+          if (event.button === 0)
+            moving = true;
+        });
+        this.canvas.addEventListener("mouseup", (event) => {
+          if (event.button === 0)
+            moving = false;
+        });
+        this.canvas.addEventListener("mousemove", () => {
+          if (moving)
+            this.onMove();
+        });
+        this.load();
+        clearInterval(interval);
+      }
+    }, 100);
+  }
+  async selectImage() {
+    return this.widget.runWithStatusAsync("Selecting image", async () => {
+      this.widget.setDisabled("select-image", true);
+      await this.updateColors();
+      this.image = await Pixels.fromSelectImage(this, this.colors, this.widget.element.querySelector(".scale").valueAsNumber);
+      await this.updatePositionsWithMarker();
+      await this.updateTasks();
+      this.overlay.update();
+      this.widget.updateText();
+      this.widget.setDisabled("draw", false);
+      this.save();
+    }, () => {
       this.widget.setDisabled("select-image", false);
     });
   }
-  async draw() {
-    this.widget.status = "⌛ Drawing...";
-    try {
-      await this.updateColors();
-      this.overlay.element.classList.add("disabled");
+  draw() {
+    return this.widget.runWithStatusAsync("Drawing", async () => {
+      this.widget.disabledScreen = true;
       this.widget.setDisabled("draw", true);
-      for (;this.overlay.cy < this.pixels.length; this.overlay.cy++) {
-        for (;this.overlay.cx < this.pixels[0].length; this.overlay.cx++) {
-          const pixel = this.getClosestColor(this.pixels[this.overlay.cy][this.overlay.cx]);
-          if (pixel.a === 0)
-            continue;
-          pixel.button.click();
-          await wait(1);
-          const pixelSize = this.overlay.getPixelSize();
-          this.canvas.dispatchEvent(new MouseEvent("mousemove", {
-            bubbles: true,
-            clientX: this.overlay.x + this.overlay.cx * pixelSize + pixelSize / 2,
-            clientY: this.overlay.y + 16 + this.overlay.cy * pixelSize + pixelSize / 2
-          }));
-          await wait(1);
-          this.canvas.dispatchEvent(new KeyboardEvent("keydown", SPACE_EVENT));
-          await wait(1);
-          this.canvas.dispatchEvent(new KeyboardEvent("keyup", SPACE_EVENT));
-          await wait(1);
-          if (document.querySelector("ol"))
-            return;
-        }
-        this.overlay.cx = 0;
+      await this.updateColors();
+      await this.updateTasks();
+      while (this.tasks.length > 0 && !document.querySelector("ol")) {
+        const index = Math.random() * this.tasks.length | 0;
+        const task = this.tasks.splice(index, 1)[0];
+        document.getElementById(task.buttonId).click();
+        await wait(1);
+        this.canvas.dispatchEvent(new MouseEvent("mousemove", {
+          bubbles: true,
+          clientX: task.x,
+          clientY: task.y
+        }));
+        await wait(1);
+        this.canvas.dispatchEvent(new KeyboardEvent("keydown", SPACE_EVENT));
+        await wait(1);
+        this.canvas.dispatchEvent(new KeyboardEvent("keyup", SPACE_EVENT));
+        await wait(1);
       }
-    } finally {
-      this.overlay.element.classList.remove("disabled");
+      this.widget.updateText();
+      this.save();
+    }, () => {
+      this.widget.disabledScreen = false;
       this.widget.setDisabled("draw", false);
-      this.widget.status = '✅ Press "Paint" and "Set timer"';
-    }
-  }
-  async updateColors() {
-    document.querySelector(".flex.gap-2.px-3 > .btn-circle")?.click();
-    await wait(1);
-    document.querySelector(".btn.btn-primary.btn-lg.relative.z-30")?.click();
-    await wait(1);
-    const unfoldColors = document.querySelector("button.bottom-0");
-    if (unfoldColors.innerHTML === '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" class="size-5"><path d="M480-120 300-300l58-58 122 122 122-122 58 58-180 180ZM358-598l-58-58 180-180 180 180-58 58-122-122-122 122Z"></path></svg><!---->') {
-      unfoldColors.click();
-      await wait(1);
-    }
-    this.colors = [
-      ...document.querySelectorAll("button.btn.relative.w-full")
-    ].map((button, index, array) => {
-      if (index === array.length - 1)
-        return {
-          r: 255,
-          g: 255,
-          b: 255,
-          a: 0,
-          available: true,
-          button
-        };
-      const rgb = button.style.background.slice(4, -1).split(", ").map((x) => +x);
-      return {
-        r: rgb[0],
-        g: rgb[1],
-        b: rgb[2],
-        a: 255,
-        available: button.children.length === 0,
-        button
-      };
     });
-    const colorsToBuy = new Map;
-    for (let y = 0;y < this.pixels.length; y++) {
-      for (let x = 0;x < this.pixels[0].length; x++) {
-        const color = this.getClosestColor(this.pixels[y][x], true);
-        if (color.available)
-          continue;
-        colorsToBuy.set(color, (colorsToBuy.get(color) ?? 0) + 1);
-      }
-    }
-    this.widget.setColorsToBuy([...colorsToBuy.entries()].sort(([, a], [, b]) => b - a));
   }
-  processImage() {
-    if (!this.image)
-      throw new NoImageError(this);
-    const imageCanvas = document.createElement("canvas");
-    const imageContext = imageCanvas.getContext("2d");
-    imageCanvas.width = this.image.width * this.scale / 100;
-    imageCanvas.height = this.image.height * this.scale / 100;
-    imageContext.drawImage(this.image, 0, 0, imageCanvas.width, imageCanvas.height);
-    this.pixels = Array.from({ length: imageCanvas.height }, () => new Array(imageCanvas.width));
-    const data = imageContext.getImageData(0, 0, imageCanvas.width, imageCanvas.height).data;
-    for (let y = 0;y < imageCanvas.height; y++) {
-      for (let x = 0;x < imageCanvas.width; x++) {
-        const index = (y * imageCanvas.width + x) * 4;
-        this.pixels[y][x] = {
-          r: data[index],
-          g: data[index + 1],
-          b: data[index + 2],
-          a: data[index + 3]
-        };
-      }
+  save() {
+    if (!this.image || !this.startPosition || !this.startScreenPosition) {
+      localStorage.removeItem("wbot");
+      return;
     }
+    localStorage.setItem("wbot", JSON.stringify({
+      image: this.image,
+      startScreenPosition: this.startScreenPosition,
+      startPosition: this.startPosition,
+      pixelSize: this.pixelSize,
+      widgetX: this.widget.x,
+      widgetY: this.widget.y,
+      overlayOpacity: this.overlay.opacity,
+      scale: this.image.scale
+    }));
+  }
+  async load() {
+    const json = localStorage.getItem("wbot");
+    if (!json)
+      return;
+    const data = JSON.parse(json);
+    this.startPosition = new WorldPosition(...data.startPosition);
+    this.startScreenPosition = data.startScreenPosition;
+    this.pixelSize = data.pixelSize;
+    await this.updateColors();
+    this.image = await Pixels.fromURL(data.image, this.colors, data.scale);
+    this.widget.element.querySelector(".scale").valueAsNumber = data.scale;
+    this.overlay.opacity = data.overlayOpacity;
+    this.widget.element.querySelector(".scale").valueAsNumber = data.overlayOpacity;
+    this.widget.updateText();
+    this.widget.updateColorsToBuy();
     this.overlay.update();
-    this.widget.setDisabled("select-image", false);
+    this.widget.setDisabled("draw", false);
   }
-  getClosestColor({ r, g, b, a }, allowNotAvailable) {
-    if (this.colors.length === 0)
-      throw new NoColorsError(this);
-    if (a < 100)
-      return this.colors.at(-1);
-    let minDelta = Infinity;
-    let min;
-    for (let index = 0;index < this.colors.length; index++) {
-      const color = this.colors[index];
-      if (!allowNotAvailable && !color.available)
-        continue;
-      const delta = Math.abs(color.r - r) + Math.abs(color.g - g) + Math.abs(color.b - b);
-      if (delta < minDelta) {
-        minDelta = delta;
-        min = color;
+  updatePositionsWithMarker() {
+    return this.widget.runWithStatusAsync("Aligning", async () => {
+      document.querySelector(".flex.items-center .btn.btn-circle.btn-sm:nth-child(3)")?.click();
+      this.startPosition = await this.widget.runWithStatusAsync("Place marker", async () => new Promise((resolve) => this.markerPixelDataResolvers.push(resolve)), undefined, "\uD83D\uDDB1️");
+      this.widget.disabledScreen = true;
+      this.startScreenPosition = this.getMarkerScreenPosition();
+      const markerPosition2Promise = new Promise((resolve) => {
+        this.markerPixelDataResolvers.push(resolve);
+      });
+      await this.clickMapAtPosition({
+        x: this.canvas.width - 1,
+        y: this.canvas.height - 1
+      });
+      const markerPosition2 = await markerPosition2Promise;
+      const markerScreenPosition2 = this.getMarkerScreenPosition();
+      this.pixelSize = (markerScreenPosition2.x - this.startScreenPosition.x) / (markerPosition2.globalX - this.startPosition.globalX);
+      this.startScreenPosition.x -= this.pixelSize / 2;
+    }, () => {
+      this.widget.disabledScreen = false;
+    });
+  }
+  updateTasks() {
+    return this.widget.runWithStatusAsync("Map reading", async () => {
+      if (!this.startPosition || !this.startScreenPosition)
+        throw new NoMarkerError(this);
+      if (!this.image)
+        throw new NoImageError(this);
+      this.tasks = [];
+      const maps = new Map;
+      for (let y = 0;y < this.image.pixels.length; y++) {
+        for (let x = 0;x < this.image.pixels[0].length; x++) {
+          const color = this.image.pixels[y][x];
+          const position = this.startPosition.clone();
+          position.x += x;
+          position.y += y;
+          let map = maps.get(position.tileX + "/" + position.tileY);
+          if (!map) {
+            map = await Pixels.fromURL(`https://backend.wplace.live/files/s0/tiles/${position.tileX}/${position.tileY}.png`, this.colors);
+            maps.set(position.tileX + "/" + position.tileY, map);
+          }
+          const colorOnMap = map.pixels[position.y][position.x];
+          if (color.buttonId !== colorOnMap.buttonId)
+            this.tasks.push({
+              ...position.toScreenPosition(this.startScreenPosition, this.startPosition, this.pixelSize),
+              buttonId: color.buttonId
+            });
+        }
       }
-    }
-    return min;
+    });
+  }
+  async clickMapAtPosition(screenPosition) {
+    await this.waitForUnfocus();
+    this.canvas?.dispatchEvent(new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      clientX: screenPosition.x,
+      clientY: screenPosition.y,
+      button: 0
+    }));
+    await wait(1);
+  }
+  updateColors() {
+    return this.widget.runWithStatusAsync("Colors update", async () => {
+      document.querySelector(".flex.gap-2.px-3 > .btn-circle")?.click();
+      await wait(1);
+      document.querySelector(".btn.btn-primary.btn-lg.relative.z-30")?.click();
+      await wait(1);
+      const unfoldColors = document.querySelector("button.bottom-0");
+      if (unfoldColors?.innerHTML === '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" class="size-5"><path d="M480-120 300-300l58-58 122 122 122-122 58 58-180 180ZM358-598l-58-58 180-180 180 180-58 58-122-122-122 122Z"></path></svg><!---->') {
+        unfoldColors.click();
+        await wait(1);
+      }
+      this.colors = [
+        ...document.querySelectorAll("button.btn.relative.w-full")
+      ].map((button, index, array) => {
+        if (index === array.length - 1)
+          return {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 0,
+            available: true,
+            buttonId: button.id
+          };
+        const rgb = button.style.background.slice(4, -1).split(", ").map((x) => +x);
+        return {
+          r: rgb[0],
+          g: rgb[1],
+          b: rgb[2],
+          a: 255,
+          available: button.children.length === 0,
+          buttonId: button.id
+        };
+      });
+    });
+  }
+  waitForUnfocus() {
+    return this.widget.runWithStatusAsync("Unfocus window!", () => new Promise((resolve) => {
+      if (!document.hasFocus())
+        resolve();
+      window.addEventListener("blur", () => {
+        setTimeout(resolve, 1);
+      }, {
+        once: true
+      });
+    }), undefined, "\uD83D\uDDB1️");
+  }
+  registerFetchInterceptor() {
+    const originalFetch = globalThis.fetch;
+    const pixelRegExp = /https:\/\/backend.wplace.live\/s\d+\/pixel\/(\d+)\/(\d+)\?x=(\d+)&y=(\d+)/;
+    globalThis.fetch = async (...arguments_) => {
+      const response = await originalFetch(...arguments_);
+      const url = typeof arguments_[0] === "string" ? arguments_[0] : arguments_[0].url;
+      setTimeout(() => {
+        const pixelMatch = pixelRegExp.exec(url);
+        if (pixelMatch) {
+          for (let index = 0;index < this.markerPixelDataResolvers.length; index++)
+            this.markerPixelDataResolvers[index](new WorldPosition(+pixelMatch[1], +pixelMatch[2], +pixelMatch[3], +pixelMatch[4]));
+          this.markerPixelDataResolvers.length = 0;
+          return;
+        }
+      }, 0);
+      return response;
+    };
+  }
+  getMarkerScreenPosition() {
+    const marker = document.querySelector(".maplibregl-marker.z-20");
+    if (!marker)
+      throw new NoMarkerError(this);
+    const rect = marker.getBoundingClientRect();
+    return {
+      x: rect.width / 2 + rect.left,
+      y: rect.bottom - 7
+    };
+  }
+  onMove() {
+    if (!this.image || !this.startPosition)
+      return;
+    this.startPosition = undefined;
+    this.startScreenPosition = undefined;
+    this.pixelSize = 0;
+    this.image = undefined;
+    this.tasks.length = 0;
+    this.overlay.update();
+    this.widget.updateText();
   }
 }
 
 // src/style.css
 var style_default = `:root {
-  --main: #0069ff;
-  --main-hover: #2580ff;
-  --text-invert: #ffffff;
   --background: #ffffff;
-  --hover: #dfdfdf;
   --disabled: #c2c2c2;
+  --hover: #dfdfdf;
+  --main-hover: #2580ff;
+  --main: #0069ff;
+  --text-invert: #ffffff;
   --text: #394e6a;
-  --resize: 4px;
-}
-
-.wbot-wrapper {
-  position: fixed;
-  z-index: 9999;
-  top: 0;
-  left: 0;
-  color: var(--text);
-}
-.wbot-wrapper input, button {
-  cursor: pointer;
-  transition: background-color 0.5s;
-}
-.wbot-wrapper input:hover,
-.wbot-wrapper button:hover {
-  background-color: var(--hover);
-}
-.wbot-wrapper input:disabled,
-.wbot-wrapper button:disabled {
-  background-color: var(--disabled);
-  cursor: not-allowed;
-}
-.wbot-wrapper .move {
-  align-items: center;
-  color: var(--text-invert);
-  background-color: var(--main);
-  cursor: move;
-  display: flex;
-  height: 16px;
-  overflow: hidden;
-  width: 100%;
-}
-.wbot-wrapper .minimize {
-  cursor: pointer;
-  height: 100%;
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  padding: 0 4px;
-}
-.wbot-wrapper .minimize:hover {
-  background-color: var(--main-hover);
-}
-.wbot-wrapper .resize {
-  height: calc(100% - var(--resize) - var(--resize));
-  width: calc(100% - var(--resize) - var(--resize));
-  position: absolute;
-}
-.wbot-wrapper .resize.n {
-  cursor: n-resize;
-  top: 0;
-  left: var(--resize);
-  height: var(--resize);
-}
-.wbot-wrapper .resize.e {
-  cursor: e-resize;
-  top: var(--resize);
-  right: 0;
-  width: var(--resize);
-}
-.wbot-wrapper .resize.s {
-  cursor: s-resize;
-  left: var(--resize);
-  bottom: 0;
-  height: var(--resize);
-}
-.wbot-wrapper .resize.w {
-  cursor: e-resize;
-  top: var(--resize);
-  left: 0;
-  width: var(--resize);
-}
-.wbot-wrapper .resize.ne {
-  cursor: ne-resize;
-  top: 0;
-  right: 0;
-  width: var(--resize);
-  height: var(--resize);
-}
-.wbot-wrapper .resize.nw {
-  cursor: nw-resize;
-  top: 0;
-  left: 0;
-  width: var(--resize);
-  height: var(--resize);
-}
-.wbot-wrapper .resize.se {
-  cursor: se-resize;
-  right: 0;
-  bottom: 0;
-  width: var(--resize);
-  height: var(--resize);
-}
-.wbot-wrapper .resize.sw {
-  cursor: sw-resize;
-  left: 0;
-  bottom: 0;
-  width: var(--resize);
-  height: var(--resize);
-}
-.wbot-overlay {
-  box-shadow: 0px 0px 0px 1px var(--main) inset;
 }
 
 .wbot-widget {
-  width: 100%;
   background-color: var(--background);
+  color: var(--text);
+  left: 0;
+  position: fixed;
+  top: 0;
+  width: 256px;
+  z-index: 9998;
 }
-.wbot-widget input,
-.wbot-widget button {
-  width: 100%;
-}
-.wbot-widget .colors {
+.wbot-widget .content > * {
+  align-items: center;
   display: flex;
-}
-.wbot-widget .colors button {
-  width: 100%;
-  height: 32px;
-  cursor: pointer;
-}
-.wbot-widget label {
-  display: flex;
-  padding: 0 8px;
-}
-.wbot-widget .wstatus {
-  width: 100%;
-  padding: 0 8px;
-  white-space: nowrap;
+  height: 24px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+.wbot-widget button,
+.wbot-widget input {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  height: 24px;
+  justify-content: center;
+  padding: 0 4px;
+  width: 100%;
+}
+.wbot-widget button:hover,
+.wbot-widget input:hover {
+  background-color: var(--hover);
+  transition: background-color 0.5s;
+}
+.wbot-widget button:disabled,
+.wbot-widget input:disabled {
+  background-color: var(--disabled);
+  cursor: no-drop;
+}
+.wbot-widget .content > div, .wbot-widget .content > label {
+  padding: 0 8px;
+}
+.wbot-widget .move {
+  background-color: var(--main);
+  color: var(--text-invert);
+  cursor: all-scroll;
+  width: 100%;
+}
+.wbot-widget .move .minimize {
+  margin-left: auto;
+  width: 24px;
+}
+.wbot-widget .move .minimize:hover {
+  background-color: var(--main-hover);
+}
+.wbot-widget .scale {
+  width: 80px;
 }
 
 .hidden {
   display: none;
+}
+
+.wbot-overlay {
+  border: 1px solid var(--main);
+  left: 0;
+  pointer-events: none;
+  position: fixed;
+  top: 0;
+  z-index: 9998;
+}
+
+.wbot-disable-screen {
+  cursor: no-drop;
+  height: 100dvh;
+  left: 0;
+  position: fixed;
+  top: 0;
+  width: 100dvw;
+  z-index: 9999;
 }
 `;
 
