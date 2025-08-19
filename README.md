@@ -21,6 +21,8 @@
 
 ![Instruction1](https://github.com/SoundOfTheSky/wplace-bot/raw/refs/heads/main/Instruction.png)
 
+P.S. Don't worry if overlay is bigger than your screen. It will still work.
+
 ## Captcha bypass
 
 I recommend using simple autoclicker like this

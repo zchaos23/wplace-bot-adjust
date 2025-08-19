@@ -93,7 +93,7 @@ export class Widget {
     const $timer = this.element.querySelector<HTMLButtonElement>('.timer')!
     $timer.disabled = true
     try {
-      const time = Date.now() + 1_799_995
+      const time = Date.now() + 1000 * 60 * 29
       while (true) {
         const left = time - Date.now()
         if (left <= 0) {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         wplace-bot
 // @namespace    https://github.com/SoundOfTheSky
-// @version      3.0.0
+// @version      3.0.1
 // @description  Bot to automate painting on website https://wplace.live
 // @author       SoundOfTheSky
 // @license      MPL-2.0
@@ -341,7 +341,7 @@ class Widget {
     const $timer = this.element.querySelector(".timer");
     $timer.disabled = true;
     try {
-      const time = Date.now() + 1799995;
+      const time = Date.now() + 1000 * 60 * 29;
       while (true) {
         const left = time - Date.now();
         if (left <= 0) {
