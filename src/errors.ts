@@ -1,7 +1,7 @@
 import { WPlaceBot } from './bot'
 
 export class WPlaceBotError extends Error {
-  public name = 'ValidationError'
+  public name = 'WPlaceBotError'
   public constructor(message: string, bot: WPlaceBot) {
     super(message)
     bot.widget.status = message

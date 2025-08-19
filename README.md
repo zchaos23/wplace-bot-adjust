@@ -2,41 +2,40 @@
 
 ## Features
 
-1. Image overlay
-2. Auto draw (still need to click captcha manually)
-3. Auto image convert to available colors
+1. Auto draw (still need to click captcha manually)
+2. Image overlay
+3. Auto image convert/scale
 4. Suggests colors to buy
-5. Set timer until pixels are restored
+5. Optional captcha bypass
 
 ## Installation
 
 1. Install TamperMonkey browser extension: [Chrome](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo?hl=en)|[Firefox](https://addons.mozilla.org/en-US/firefox/addon/tampermonkey/)
 2. [Open this link](https://github.com/SoundOfTheSky/wplace-bot/raw/refs/heads/main/dist.user.js)
 3. Press install
+4. Allow user scripts
+   1. Chrome: Settings>Extensions>Manage Extensions>Tampermonkey>Details>Allow User Scripts
+   2. Firefox: Settings>Extensions and Themes>Tampermonkey>Allow User Scripts
 
 ## How to use
 
-![Instruction1](https://github.com/SoundOfTheSky/wplace-bot/raw/refs/heads/main/Instruction1.png)
-![Instruction2](https://github.com/SoundOfTheSky/wplace-bot/raw/refs/heads/main/Instruction2.png)
+![Instruction1](https://github.com/SoundOfTheSky/wplace-bot/raw/refs/heads/main/Instruction.png)
 
 ## Captcha bypass
 
 I recommend using simple autoclicker like this
 
-1. Click "Draw"
-2. Click on URL to unfocus window, wait 5s
-3. Click Captcha, wait 5s
-4. Click "Paint", wait 5s
-5. Repeat every 30 minutes
+1. Click "Set timer", wait 30 minutes
+2. Click Captcha, wait 5s
+3. Click "Paint", wait 5s
+4. Repeat
 
 Yes, it works. But don't forget from time to time to check that you're still logged in.
 
 ## Known issues
 
-1. It's not quite clear when to unfocus window
-2. Bot doesn't know what colors are already drawn
-3. Once your session on wesite ends, bot obviously stops
-4. Screen with high DPI are unsupported (for now)
+1. Once your session on wesite ends, bot obviously stops
+2. Screen with high DPI are unsupported (for now)
 
 ## Contribution
 

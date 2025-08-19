@@ -8,6 +8,7 @@ export default [
     rules: {
       '@typescript-eslint/ban-ts-comment': 0,
       'import-x/no-unresolved': 0,
+      'unicorn/prefer-query-selector': 0,
     },
   },
 ]
