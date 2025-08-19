@@ -27,9 +27,9 @@ P.S. Don't worry if overlay is bigger than your screen. It will still work.
 
 I recommend using simple autoclicker like this
 
-1. Click "Set timer", wait 30 minutes
+1. Click "Draw", wait 1 minute (Reading map may take a long time)
 2. Click Captcha, wait 5s
-3. Click "Paint", wait 5s
+3. Click "Paint", wait 30 minutes
 4. Repeat
 
 Yes, it works. But don't forget from time to time to check that you're still logged in.
