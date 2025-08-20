@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         wplace-bot
 // @namespace    https://github.com/SoundOfTheSky
-// @version      3.0.1
+// @version      3.0.2
 // @description  Bot to automate painting on website https://wplace.live
 // @author       SoundOfTheSky
 // @license      MPL-2.0
@@ -224,14 +224,11 @@ class Pixels {
         let minReal;
         for (let index2 = 0;index2 < this.colors.length; index2++) {
           const color = this.colors[index2];
-          if (color.available) {
-            const delta2 = Math.abs(color.r - r) + Math.abs(color.g - g) + Math.abs(color.b - b);
-            if (delta2 < minDelta) {
-              minDelta = delta2;
-              min = color;
-            }
+          const delta = (color.r - r) ** 2 + (color.g - g) ** 2 + (color.b - b) ** 2;
+          if (color.available && delta < minDelta) {
+            minDelta = delta;
+            min = color;
           }
-          const delta = Math.abs(color.r - r) + Math.abs(color.g - g) + Math.abs(color.b - b);
           if (delta < minDeltaReal) {
             minDeltaReal = delta;
             minReal = color;
@@ -261,14 +258,13 @@ var widget_default = `<div class="move">
 <div class="content">
   <button class="select-image">Select image</button>
   <button class="draw" disabled>Draw</button>
-  <button class="timer">Set timer</button>
-  <label>Scale:&nbsp;<input class="scale" type="number" >%</label>
-  <label>Opacity:&nbsp;<input class="opacity" type="range" min="0" max="100"></label>
+  <label class="p">Scale:&nbsp;<input class="scale" type="number" >%</label>
+  <label class="p">Opacity:&nbsp;<input class="opacity" type="range" min="0" max="100"></label>
   <div class="colors"></div>
-  <div class="eta">ETA: <span class="value"></span></div>
-  <div class="progress">Progress: <span class="value"></span></div>
+  <div class="eta p">ETA: <span class="value"></span></div>
+  <div class="progress p">Progress: <span class="value"></span></div>
   <progress max="100"></progress>
-  <div class="wstatus"></div>
+  <div class="wstatus p"></div>
 </div>
 
 `;
@@ -284,24 +280,12 @@ class Widget {
   set status(value) {
     this.element.querySelector(".wstatus").innerHTML = value;
   }
-  get disabledScreen() {
-    return this.disableScreenElement.classList.contains("hidden");
-  }
-  set disabledScreen(value) {
-    if (value)
-      this.disableScreenElement.classList.remove("hidden");
-    else
-      this.disableScreenElement.classList.add("hidden");
-  }
   element = document.createElement("div");
-  disableScreenElement = document.createElement("div");
   moveInfo;
   constructor(bot) {
     this.bot = bot;
-    this.element.classList.add("wbot-widget");
-    this.disableScreenElement.classList.add("wbot-disable-screen", "hidden");
+    this.element.classList.add("wbot-widget", "hidden");
     document.body.append(this.element);
-    document.body.append(this.disableScreenElement);
     this.element.innerHTML = widget_default;
     this.element.querySelector(".minimize").addEventListener("click", () => {
       this.minimize();
@@ -321,7 +305,6 @@ class Widget {
     this.element.style.transform = `translate(${this.x}px, ${this.y}px)`;
     this.element.querySelector(".select-image").addEventListener("click", () => this.bot.selectImage());
     this.element.querySelector(".draw").addEventListener("click", () => this.bot.draw());
-    this.element.querySelector(".timer").addEventListener("click", () => this.timer());
     const $scale = this.element.querySelector(".scale");
     $scale.addEventListener("change", () => {
       if (!this.bot.image)
@@ -336,26 +319,6 @@ class Widget {
       this.bot.overlay.update();
     });
     this.updateText();
-  }
-  async timer() {
-    const $timer = this.element.querySelector(".timer");
-    $timer.disabled = true;
-    try {
-      const time = Date.now() + 1000 * 60 * 29;
-      while (true) {
-        const left = time - Date.now();
-        if (left <= 0) {
-          new Audio("https://www.myinstants.com/media/sounds/winnerchickendinner.mp3").play();
-          this.bot.draw();
-          break;
-        }
-        $timer.textContent = `${left / 60000 | 0}:${left % 60000 / 1000 | 0}`;
-        await wait(1000);
-      }
-    } finally {
-      $timer.disabled = false;
-      $timer.textContent = "Set timer";
-    }
   }
   setDisabled(name, disabled) {
     this.element.querySelector("." + name).disabled = disabled;
@@ -374,7 +337,8 @@ class Widget {
       $colors.append($div);
       $div.style.backgroundColor = `rgb(${color.r} ${color.g} ${color.b})`;
       $div.style.width = amount / sum * 100 + "%";
-      $div.addEventListener("click", () => {
+      $div.addEventListener("click", async () => {
+        await this.bot.openColors();
         document.getElementById(color.buttonId)?.click();
       });
     }
@@ -443,9 +407,10 @@ class WPlaceBot {
   canvas;
   constructor() {
     this.registerFetchInterceptor();
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
       this.canvas = document.querySelector(".maplibregl-canvas") ?? undefined;
-      if (this.canvas && document.querySelector(".btn.btn-primary.btn-lg.relative.z-30 canvas")) {
+      if (this.canvas && document.querySelector(".btn.btn-primary.btn-lg.relative.z-30 canvas") && document.querySelector(".avatar.center-absolute.absolute")) {
+        clearInterval(interval);
         let moving = false;
         this.canvas.addEventListener("wheel", () => {
           if (this.image)
@@ -463,12 +428,13 @@ class WPlaceBot {
           if (moving)
             this.onMove();
         });
-        this.load();
-        clearInterval(interval);
+        await this.load();
+        this.widget.element.classList.remove("hidden");
       }
-    }, 100);
+    }, 500);
   }
   async selectImage() {
+    this.widget.status = "";
     return this.widget.runWithStatusAsync("Selecting image", async () => {
       this.widget.setDisabled("select-image", true);
       await this.updateColors();
@@ -484,8 +450,13 @@ class WPlaceBot {
     });
   }
   draw() {
+    this.widget.status = "";
+    const prevent = (event) => {
+      if (!event.shiftKey)
+        event.stopPropagation();
+    };
+    globalThis.addEventListener("mousemove", prevent, true);
     return this.widget.runWithStatusAsync("Drawing", async () => {
-      this.widget.disabledScreen = true;
       this.widget.setDisabled("draw", true);
       await this.updateColors();
       await this.updateTasks();
@@ -493,22 +464,20 @@ class WPlaceBot {
         const index = Math.random() * this.tasks.length | 0;
         const task = this.tasks.splice(index, 1)[0];
         document.getElementById(task.buttonId).click();
-        await wait(1);
-        this.canvas.dispatchEvent(new MouseEvent("mousemove", {
+        document.documentElement.dispatchEvent(new MouseEvent("mousemove", {
           bubbles: true,
           clientX: task.x,
-          clientY: task.y
+          clientY: task.y,
+          shiftKey: true
         }));
-        await wait(1);
-        this.canvas.dispatchEvent(new KeyboardEvent("keydown", SPACE_EVENT));
-        await wait(1);
-        this.canvas.dispatchEvent(new KeyboardEvent("keyup", SPACE_EVENT));
+        document.documentElement.dispatchEvent(new KeyboardEvent("keydown", SPACE_EVENT));
+        document.documentElement.dispatchEvent(new KeyboardEvent("keyup", SPACE_EVENT));
         await wait(1);
       }
       this.widget.updateText();
       this.save();
     }, () => {
-      this.widget.disabledScreen = false;
+      globalThis.removeEventListener("mousemove", prevent, true);
       this.widget.setDisabled("draw", false);
     });
   }
@@ -532,25 +501,41 @@ class WPlaceBot {
     const json = localStorage.getItem("wbot");
     if (!json)
       return;
-    const data = JSON.parse(json);
-    this.startPosition = new WorldPosition(...data.startPosition);
-    this.startScreenPosition = data.startScreenPosition;
-    this.pixelSize = data.pixelSize;
-    await this.updateColors();
-    this.image = await Pixels.fromURL(data.image, this.colors, data.scale);
-    this.widget.element.querySelector(".scale").valueAsNumber = data.scale;
-    this.overlay.opacity = data.overlayOpacity;
-    this.widget.element.querySelector(".scale").valueAsNumber = data.overlayOpacity;
-    this.widget.updateText();
-    this.widget.updateColorsToBuy();
-    this.overlay.update();
-    this.widget.setDisabled("draw", false);
+    try {
+      const data = JSON.parse(json);
+      this.startPosition = new WorldPosition(...data.startPosition);
+      this.startScreenPosition = data.startScreenPosition;
+      this.pixelSize = data.pixelSize;
+      await this.updateColors();
+      this.image = await Pixels.fromURL(data.image, this.colors, data.scale);
+      this.widget.element.querySelector(".scale").valueAsNumber = data.scale;
+      this.overlay.opacity = data.overlayOpacity;
+      this.widget.element.querySelector(".scale").valueAsNumber = data.overlayOpacity;
+      await this.updateTasks();
+      this.widget.updateText();
+      this.widget.updateColorsToBuy();
+      this.overlay.update();
+      this.widget.setDisabled("draw", false);
+    } catch {
+      localStorage.removeItem("wbot");
+      this.widget.status = "❌ Failed to load save";
+    }
+  }
+  async openColors() {
+    document.querySelector(".flex.gap-2.px-3 > .btn-circle")?.click();
+    await wait(1);
+    document.querySelector(".btn.btn-primary.btn-lg.relative.z-30")?.click();
+    await wait(1);
+    const unfoldColors = document.querySelector("button.bottom-0");
+    if (unfoldColors?.innerHTML === '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" class="size-5"><path d="M480-120 300-300l58-58 122 122 122-122 58 58-180 180ZM358-598l-58-58 180-180 180 180-58 58-122-122-122 122Z"></path></svg><!---->') {
+      unfoldColors.click();
+      await wait(1);
+    }
   }
   updatePositionsWithMarker() {
     return this.widget.runWithStatusAsync("Aligning", async () => {
       document.querySelector(".flex.items-center .btn.btn-circle.btn-sm:nth-child(3)")?.click();
       this.startPosition = await this.widget.runWithStatusAsync("Place marker", async () => new Promise((resolve) => this.markerPixelDataResolvers.push(resolve)), undefined, "\uD83D\uDDB1️");
-      this.widget.disabledScreen = true;
       this.startScreenPosition = this.getMarkerScreenPosition();
       const markerPosition2Promise = new Promise((resolve) => {
         this.markerPixelDataResolvers.push(resolve);
@@ -563,8 +548,6 @@ class WPlaceBot {
       const markerScreenPosition2 = this.getMarkerScreenPosition();
       this.pixelSize = (markerScreenPosition2.x - this.startScreenPosition.x) / (markerPosition2.globalX - this.startPosition.globalX);
       this.startScreenPosition.x -= this.pixelSize / 2;
-    }, () => {
-      this.widget.disabledScreen = false;
     });
   }
   updateTasks() {
@@ -609,15 +592,7 @@ class WPlaceBot {
   }
   updateColors() {
     return this.widget.runWithStatusAsync("Colors update", async () => {
-      document.querySelector(".flex.gap-2.px-3 > .btn-circle")?.click();
-      await wait(1);
-      document.querySelector(".btn.btn-primary.btn-lg.relative.z-30")?.click();
-      await wait(1);
-      const unfoldColors = document.querySelector("button.bottom-0");
-      if (unfoldColors?.innerHTML === '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" class="size-5"><path d="M480-120 300-300l58-58 122 122 122-122 58 58-180 180ZM358-598l-58-58 180-180 180 180-58 58-122-122-122 122Z"></path></svg><!---->') {
-        unfoldColors.click();
-        await wait(1);
-      }
+      await this.openColors();
       this.colors = [
         ...document.querySelectorAll("button.btn.relative.w-full")
       ].map((button, index, array) => {
@@ -691,6 +666,7 @@ class WPlaceBot {
     this.tasks.length = 0;
     this.overlay.update();
     this.widget.updateText();
+    this.widget.setDisabled("draw", true);
   }
 }
 
@@ -743,7 +719,7 @@ var style_default = `:root {
   background-color: var(--disabled);
   cursor: no-drop;
 }
-.wbot-widget .content > div, .wbot-widget .content > label {
+.wbot-widget .p {
   padding: 0 8px;
 }
 .wbot-widget .move {
@@ -763,6 +739,7 @@ var style_default = `:root {
   width: 80px;
 }
 
+
 .hidden {
   display: none;
 }
@@ -774,18 +751,7 @@ var style_default = `:root {
   position: fixed;
   top: 0;
   z-index: 9998;
-}
-
-.wbot-disable-screen {
-  cursor: no-drop;
-  height: 100dvh;
-  left: 0;
-  position: fixed;
-  top: 0;
-  width: 100dvw;
-  z-index: 9999;
-}
-`;
+}`;
 
 // src/index.ts
 var style = document.createElement("style");

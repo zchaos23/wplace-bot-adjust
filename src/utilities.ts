@@ -2,12 +2,6 @@
 export function wait(time: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, time))
 }
-
-export function pixelMapDistance(a: number, b: number) {
-  const direct = Math.abs(a - b)
-  return Math.min(direct, 4000 - direct)
-}
-
 export const SPACE_EVENT = {
   key: ' ',
   code: 'Space',

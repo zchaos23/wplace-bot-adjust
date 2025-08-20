@@ -97,20 +97,12 @@ export class Pixels {
         let minReal: WPlaceColor | undefined
         for (let index = 0; index < this.colors.length; index++) {
           const color = this.colors[index]!
-          if (color.available) {
-            const delta =
-              Math.abs(color.r - r) +
-              Math.abs(color.g - g) +
-              Math.abs(color.b - b)
-            if (delta < minDelta) {
-              minDelta = delta
-              min = color
-            }
-          }
           const delta =
-            Math.abs(color.r - r) +
-            Math.abs(color.g - g) +
-            Math.abs(color.b - b)
+            (color.r - r) ** 2 + (color.g - g) ** 2 + (color.b - b) ** 2
+          if (color.available && delta < minDelta) {
+            minDelta = delta
+            min = color
+          }
           if (delta < minDeltaReal) {
             minDeltaReal = delta
             minReal = color

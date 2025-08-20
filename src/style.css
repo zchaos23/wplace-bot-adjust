@@ -46,7 +46,7 @@
   background-color: var(--disabled);
   cursor: no-drop;
 }
-.wbot-widget .content > div, .wbot-widget .content > label {
+.wbot-widget .p {
   padding: 0 8px;
 }
 .wbot-widget .move {
@@ -66,6 +66,7 @@
   width: 80px;
 }
 
+
 .hidden {
   display: none;
 }
@@ -77,14 +78,4 @@
   position: fixed;
   top: 0;
   z-index: 9998;
-}
-
-.wbot-disable-screen {
-  cursor: no-drop;
-  height: 100dvh;
-  left: 0;
-  position: fixed;
-  top: 0;
-  width: 100dvw;
-  z-index: 9999;
 }

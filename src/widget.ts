@@ -1,6 +1,5 @@
 import { WPlaceBot } from './bot'
 import { NoImageError, WPlaceBotError } from './errors'
-import { wait } from './utilities'
 // @ts-ignore
 import html from './widget.html' with { type: 'text' }
 
@@ -18,17 +17,7 @@ export class Widget {
     this.element.querySelector('.wstatus')!.innerHTML = value
   }
 
-  public get disabledScreen() {
-    return this.disableScreenElement.classList.contains('hidden')
-  }
-  public set disabledScreen(value: boolean) {
-    if (value) this.disableScreenElement.classList.remove('hidden')
-    else this.disableScreenElement.classList.add('hidden')
-  }
-
   public element = document.createElement('div')
-
-  protected disableScreenElement = document.createElement('div')
 
   /** Moving/resizing overlay */
   protected moveInfo?: {
@@ -39,10 +28,8 @@ export class Widget {
   }
 
   public constructor(protected bot: WPlaceBot) {
-    this.element.classList.add('wbot-widget')
-    this.disableScreenElement.classList.add('wbot-disable-screen', 'hidden')
+    this.element.classList.add('wbot-widget', 'hidden')
     document.body.append(this.element)
-    document.body.append(this.disableScreenElement)
     this.element.innerHTML = html as string
     // Move/minimize
     this.element
@@ -70,9 +57,6 @@ export class Widget {
     this.element
       .querySelector('.draw')!
       .addEventListener('click', () => this.bot.draw())
-    this.element
-      .querySelector('.timer')!
-      .addEventListener('click', () => this.timer())
     const $scale = this.element.querySelector<HTMLInputElement>('.scale')!
     $scale.addEventListener('change', () => {
       if (!this.bot.image) return
@@ -86,30 +70,6 @@ export class Widget {
       this.bot.overlay.update()
     })
     this.updateText()
-  }
-
-  /** Start Timer */
-  public async timer() {
-    const $timer = this.element.querySelector<HTMLButtonElement>('.timer')!
-    $timer.disabled = true
-    try {
-      const time = Date.now() + 1000 * 60 * 29
-      while (true) {
-        const left = time - Date.now()
-        if (left <= 0) {
-          void new Audio(
-            'https://www.myinstants.com/media/sounds/winnerchickendinner.mp3',
-          ).play()
-          void this.bot.draw()
-          break
-        }
-        $timer.textContent = `${(left / 60_000) | 0}:${((left % 60_000) / 1000) | 0}`
-        await wait(1000)
-      }
-    } finally {
-      $timer.disabled = false
-      $timer.textContent = 'Set timer'
-    }
   }
 
   /** Disable/enable element by class name */
@@ -132,7 +92,8 @@ export class Widget {
       $colors.append($div)
       $div.style.backgroundColor = `rgb(${color.r} ${color.g} ${color.b})`
       $div.style.width = (amount / sum) * 100 + '%'
-      $div.addEventListener('click', () => {
+      $div.addEventListener('click', async () => {
+        await this.bot.openColors()
         document.getElementById(color.buttonId)?.click()
       })
     }

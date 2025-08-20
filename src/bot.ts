@@ -41,15 +41,19 @@ export class WPlaceBot {
 
   public constructor() {
     this.registerFetchInterceptor()
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
       this.canvas =
         document.querySelector<HTMLCanvasElement>('.maplibregl-canvas') ??
         undefined
-      // Check tfor paint and canvas
+      // Check for paint, canvas and user avatar before init
       if (
         this.canvas &&
-        document.querySelector('.btn.btn-primary.btn-lg.relative.z-30 canvas')
+        document.querySelector(
+          '.btn.btn-primary.btn-lg.relative.z-30 canvas',
+        ) &&
+        document.querySelector('.avatar.center-absolute.absolute')
       ) {
+        clearInterval(interval)
         let moving = false
         this.canvas.addEventListener('wheel', () => {
           if (this.image) this.onMove()
@@ -63,14 +67,15 @@ export class WPlaceBot {
         this.canvas.addEventListener('mousemove', () => {
           if (moving) this.onMove()
         })
-        void this.load()
-        clearInterval(interval)
+        await this.load()
+        this.widget.element.classList.remove('hidden')
       }
-    }, 100)
+    }, 500)
   }
 
   /** Handles selectImage button press */
   public async selectImage() {
+    this.widget.status = ''
     return this.widget.runWithStatusAsync(
       'Selecting image',
       async () => {
@@ -97,10 +102,14 @@ export class WPlaceBot {
 
   /** Start drawing */
   public draw() {
+    this.widget.status = ''
+    const prevent = (event: MouseEvent) => {
+      if (!event.shiftKey) event.stopPropagation()
+    }
+    globalThis.addEventListener('mousemove', prevent, true)
     return this.widget.runWithStatusAsync(
       'Drawing',
       async () => {
-        this.widget.disabledScreen = true
         this.widget.setDisabled('draw', true)
         await this.updateColors()
         await this.updateTasks()
@@ -108,25 +117,27 @@ export class WPlaceBot {
           const index = (Math.random() * this.tasks.length) | 0
           const task = this.tasks.splice(index, 1)[0]!
           ;(document.getElementById(task.buttonId) as HTMLButtonElement).click()
-          await wait(1)
-          this.canvas!.dispatchEvent(
+          document.documentElement.dispatchEvent(
             new MouseEvent('mousemove', {
               bubbles: true,
               clientX: task.x,
               clientY: task.y,
+              shiftKey: true,
             }),
           )
-          await wait(1)
-          this.canvas!.dispatchEvent(new KeyboardEvent('keydown', SPACE_EVENT))
-          await wait(1)
-          this.canvas!.dispatchEvent(new KeyboardEvent('keyup', SPACE_EVENT))
+          document.documentElement.dispatchEvent(
+            new KeyboardEvent('keydown', SPACE_EVENT),
+          )
+          document.documentElement.dispatchEvent(
+            new KeyboardEvent('keyup', SPACE_EVENT),
+          )
           await wait(1)
         }
         this.widget.updateText()
         this.save()
       },
       () => {
-        this.widget.disabledScreen = false
+        globalThis.removeEventListener('mousemove', prevent, true)
         this.widget.setDisabled('draw', false)
       },
     )
@@ -153,72 +164,96 @@ export class WPlaceBot {
     )
   }
 
+  /** Load data from localStorage */
   public async load() {
     const json = localStorage.getItem('wbot')!
     if (!json) return
-    const data = JSON.parse(json) as Save
-    this.startPosition = new WorldPosition(...data.startPosition)
-    this.startScreenPosition = data.startScreenPosition
-    this.pixelSize = data.pixelSize
-    await this.updateColors()
-    this.image = await Pixels.fromURL(data.image, this.colors, data.scale)
-    this.widget.element.querySelector<HTMLInputElement>(
-      '.scale',
-    )!.valueAsNumber = data.scale
-    this.overlay.opacity = data.overlayOpacity
-    this.widget.element.querySelector<HTMLInputElement>(
-      '.scale',
-    )!.valueAsNumber = data.overlayOpacity
-    this.widget.updateText()
-    this.widget.updateColorsToBuy()
-    this.overlay.update()
-    this.widget.setDisabled('draw', false)
+    try {
+      const data = JSON.parse(json) as Save
+      this.startPosition = new WorldPosition(...data.startPosition)
+      this.startScreenPosition = data.startScreenPosition
+      this.pixelSize = data.pixelSize
+      await this.updateColors()
+      this.image = await Pixels.fromURL(data.image, this.colors, data.scale)
+      this.widget.element.querySelector<HTMLInputElement>(
+        '.scale',
+      )!.valueAsNumber = data.scale
+      this.overlay.opacity = data.overlayOpacity
+      this.widget.element.querySelector<HTMLInputElement>(
+        '.scale',
+      )!.valueAsNumber = data.overlayOpacity
+      await this.updateTasks()
+      this.widget.updateText()
+      this.widget.updateColorsToBuy()
+      this.overlay.update()
+      this.widget.setDisabled('draw', false)
+    } catch {
+      localStorage.removeItem('wbot')
+      this.widget.status = '❌ Failed to load save'
+    }
+  }
+
+  /** Opens colors and makes them visible for selection */
+  public async openColors() {
+    // Click close marker
+    document
+      .querySelector<HTMLButtonElement>('.flex.gap-2.px-3 > .btn-circle')
+      ?.click()
+    await wait(1)
+    // Click "Paint"
+    document
+      .querySelector<HTMLButtonElement>('.btn.btn-primary.btn-lg.relative.z-30')
+      ?.click()
+    await wait(1)
+    // Click Unfold colors if folded
+    const unfoldColors =
+      document.querySelector<HTMLButtonElement>('button.bottom-0')
+    if (
+      unfoldColors?.innerHTML ===
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" class="size-5"><path d="M480-120 300-300l58-58 122 122 122-122 58 58-180 180ZM358-598l-58-58 180-180 180 180-58 58-122-122-122 122Z"></path></svg><!---->'
+    ) {
+      unfoldColors.click()
+      await wait(1)
+    }
   }
 
   /** Estimates map position, pixels and aligns overlay */
   protected updatePositionsWithMarker() {
-    return this.widget.runWithStatusAsync(
-      'Aligning',
-      async () => {
-        // Close colors for easy marker placement
-        document
-          .querySelector<HTMLButtonElement>(
-            '.flex.items-center .btn.btn-circle.btn-sm:nth-child(3)',
-          )
-          ?.click()
-        // Wait for user to place marker
-        this.startPosition = await this.widget.runWithStatusAsync(
-          'Place marker',
-          async () =>
-            new Promise<WorldPosition>((resolve) =>
-              this.markerPixelDataResolvers.push(resolve),
-            ),
-          undefined,
-          '🖱️',
+    return this.widget.runWithStatusAsync('Aligning', async () => {
+      // Close colors for easy marker placement
+      document
+        .querySelector<HTMLButtonElement>(
+          '.flex.items-center .btn.btn-circle.btn-sm:nth-child(3)',
         )
-        this.widget.disabledScreen = true
-        this.startScreenPosition = this.getMarkerScreenPosition()
+        ?.click()
+      // Wait for user to place marker
+      this.startPosition = await this.widget.runWithStatusAsync(
+        'Place marker',
+        async () =>
+          new Promise<WorldPosition>((resolve) =>
+            this.markerPixelDataResolvers.push(resolve),
+          ),
+        undefined,
+        '🖱️',
+      )
+      this.startScreenPosition = this.getMarkerScreenPosition()
 
-        // Point 2
-        const markerPosition2Promise = new Promise<WorldPosition>((resolve) => {
-          this.markerPixelDataResolvers.push(resolve)
-        })
-        await this.clickMapAtPosition({
-          x: this.canvas!.width - 1,
-          y: this.canvas!.height - 1,
-        })
-        const markerPosition2 = await markerPosition2Promise
-        const markerScreenPosition2 = this.getMarkerScreenPosition()
-        // Point 1 again
-        this.pixelSize =
-          (markerScreenPosition2.x - this.startScreenPosition.x) /
-          (markerPosition2.globalX - this.startPosition.globalX)
-        this.startScreenPosition.x -= this.pixelSize / 2
-      },
-      () => {
-        this.widget.disabledScreen = false
-      },
-    )
+      // Point 2
+      const markerPosition2Promise = new Promise<WorldPosition>((resolve) => {
+        this.markerPixelDataResolvers.push(resolve)
+      })
+      await this.clickMapAtPosition({
+        x: this.canvas!.width - 1,
+        y: this.canvas!.height - 1,
+      })
+      const markerPosition2 = await markerPosition2Promise
+      const markerScreenPosition2 = this.getMarkerScreenPosition()
+      // Point 1 again
+      this.pixelSize =
+        (markerScreenPosition2.x - this.startScreenPosition.x) /
+        (markerPosition2.globalX - this.startPosition.globalX)
+      this.startScreenPosition.x -= this.pixelSize / 2
+    })
   }
 
   /** Calculates everything we need to do. Very expensive task! */
@@ -276,29 +311,7 @@ export class WPlaceBot {
   /** Read colors */
   protected updateColors() {
     return this.widget.runWithStatusAsync('Colors update', async () => {
-      // Click close marker
-      document
-        .querySelector<HTMLButtonElement>('.flex.gap-2.px-3 > .btn-circle')
-        ?.click()
-      await wait(1)
-      // Click "Paint"
-      document
-        .querySelector<HTMLButtonElement>(
-          '.btn.btn-primary.btn-lg.relative.z-30',
-        )
-        ?.click()
-      await wait(1)
-      // Click Unfold colors if folded
-      const unfoldColors =
-        document.querySelector<HTMLButtonElement>('button.bottom-0')
-      if (
-        unfoldColors?.innerHTML ===
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" class="size-5"><path d="M480-120 300-300l58-58 122 122 122-122 58 58-180 180ZM358-598l-58-58 180-180 180 180-58 58-122-122-122 122Z"></path></svg><!---->'
-      ) {
-        unfoldColors.click()
-        await wait(1)
-      }
-
+      await this.openColors()
       this.colors = (
         [
           ...document.querySelectorAll('button.btn.relative.w-full'),
@@ -409,5 +422,6 @@ export class WPlaceBot {
     this.tasks.length = 0
     this.overlay.update()
     this.widget.updateText()
+    this.widget.setDisabled('draw', true)
   }
 }
