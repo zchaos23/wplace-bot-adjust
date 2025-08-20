@@ -27,12 +27,13 @@ P.S. Don't worry if overlay is bigger than your screen. It will still work.
 
 I recommend using simple autoclicker like this
 
-1. Click "Draw", wait 1 minute (Reading map may take a long time)
-2. Click Captcha, wait 5s
-3. Click "Paint", wait 30 minutes
-4. Repeat
+1. Reload tab "CTRL+SHIFT+R", wait 10 seconds (Optional, but recommended)
+2. Click "Draw", wait 10-15 seconds
+3. Click Captcha, wait 5s
+4. Click "Paint", wait 30 minutes
+5. Repeat
 
-Yes, it works. But don't forget from time to time to check that you're still logged in.
+Also I'm using [Firefox Multi-Account Containers](https://addons.mozilla.org/en-GB/firefox/addon/multi-account-containers/) to open multiple bots, each in it's own tab.
 
 ## Known issues
 
