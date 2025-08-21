@@ -65,6 +65,9 @@
 .wbot-widget .scale {
   width: 80px;
 }
+.wbot-widget .strategy {
+  text-align: center;
+}
 
 
 .hidden {

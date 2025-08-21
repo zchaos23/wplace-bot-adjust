@@ -1,12 +1,14 @@
-export type WPlaceMe = {
-  charges: {
-    max: number
-    count: number
-    cooldownMs: number
-  }
+export enum Strategy {
+  RANDOM = 'RANDOM',
+  DOWN = 'DOWN',
+  UP = 'UP',
+  LEFT = 'LEFT',
+  RIGHT = 'RIGHT',
+  SPIRAL_FROM_CENTER = 'SPIRAL_FROM_CENTER',
+  SPIRAL_TO_CENTER = 'SPIRAL_TO_CENTER',
 }
 
-export type WPlaceColor = {
+export type Color = {
   r: number
   g: number
   b: number
@@ -33,4 +35,22 @@ export type Save = {
   widgetY: number
   overlayOpacity: number
   scale: number
+  strategy: Strategy
+}
+
+export type PixelMetaData = {
+  paintedBy: {
+    id: number
+    name: string
+    allianceId: number
+    allianceName: string
+    equippedFlag: number
+  }
+  region: {
+    id: number
+    cityId: number
+    name: string
+    number: number
+    countryId: number
+  }
 }

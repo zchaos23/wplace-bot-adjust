@@ -1,21 +1,21 @@
 import { WPlaceBot } from './bot'
 import { NoImageError } from './errors'
 import { TILE_SIZE } from './position'
-import { WPlaceColor } from './types'
+import { Color } from './types'
 import { promisify } from './utilities'
 
 export class Pixels {
   /** Pixels of image. Use update() after changing variables */
-  public pixels!: WPlaceColor[][]
+  public pixels!: Color[][]
 
   /** Colors that are recommended to buy with amount of pixels affected. Sorted. */
-  public colorsToBuy!: [WPlaceColor, number][]
+  public colorsToBuy!: [Color, number][]
 
   public constructor(
     /** Image element */
     public image: HTMLImageElement,
     /** WPlace colors */
-    public colors: WPlaceColor[],
+    public colors: Color[],
     /** Change scale of image pixels */
     public scale = 100,
   ) {
@@ -25,7 +25,7 @@ export class Pixels {
   /** Open select image dialog and create */
   public static async fromSelectImage(
     bot: WPlaceBot,
-    colors: WPlaceColor[],
+    colors: Color[],
     scale?: number,
   ) {
     const input = document.createElement('input')
@@ -45,11 +45,7 @@ export class Pixels {
   }
 
   /** Create from url */
-  public static async fromURL(
-    url: string,
-    colors: WPlaceColor[],
-    scale?: number,
-  ) {
+  public static async fromURL(url: string, colors: Color[], scale?: number) {
     const image = new Image()
     image.src = await fetch(url)
       .then((x) => x.blob())
@@ -69,14 +65,14 @@ export class Pixels {
   public update() {
     const canvas = document.createElement('canvas')
     const context = canvas.getContext('2d')!
-    const colorsToBuy = new Map<WPlaceColor, number>()
+    const colorsToBuy = new Map<Color, number>()
     const scale = this.scale / 100
     canvas.width = this.image.width * scale
     canvas.height = this.image.height * scale
     context.drawImage(this.image, 0, 0, canvas.width, canvas.height)
     this.pixels = Array.from(
       { length: canvas.height },
-      () => new Array(canvas.width) as WPlaceColor[],
+      () => new Array(canvas.width) as Color[],
     )
     const data = context.getImageData(0, 0, canvas.width, canvas.height).data
     for (let y = 0; y < canvas.height; y++) {
@@ -92,9 +88,9 @@ export class Pixels {
           continue
         }
         let minDelta = Infinity
-        let min: WPlaceColor | undefined
+        let min: Color | undefined
         let minDeltaReal = Infinity
-        let minReal: WPlaceColor | undefined
+        let minReal: Color | undefined
         for (let index = 0; index < this.colors.length; index++) {
           const color = this.colors[index]!
           const delta =

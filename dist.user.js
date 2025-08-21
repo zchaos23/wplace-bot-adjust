@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         wplace-bot
 // @namespace    https://github.com/SoundOfTheSky
-// @version      3.0.2
+// @version      3.1.0
 // @description  Bot to automate painting on website https://wplace.live
 // @author       SoundOfTheSky
 // @license      MPL-2.0
@@ -82,8 +82,16 @@ class WorldPosition {
   get globalX() {
     return this.tileX * TILE_SIZE + this.x;
   }
+  set globalX(value) {
+    this.tileX = value / TILE_SIZE | 0;
+    this.x = value % TILE_SIZE;
+  }
   get globalY() {
     return this.tileY * TILE_SIZE + this.y;
+  }
+  set globalY(value) {
+    this.tileY = value / TILE_SIZE | 0;
+    this.y = value % TILE_SIZE;
   }
   _x;
   get x() {
@@ -152,6 +160,95 @@ function promisify(target, resolveEvents, rejectEvents) {
     for (let index = 0;index < rejectEvents.length; index++)
       target.addEventListener(rejectEvents[index], reject);
   });
+}
+function* strategyPositionIterator(height, width, strategy) {
+  switch (strategy) {
+    case "DOWN" /* DOWN */: {
+      for (let y = 0;y < height; y++)
+        for (let x = 0;x < width; x++)
+          yield { x, y };
+      break;
+    }
+    case "UP" /* UP */: {
+      for (let y = height - 1;y >= 0; y--)
+        for (let x = 0;x < width; x++)
+          yield { x, y };
+      break;
+    }
+    case "LEFT" /* LEFT */: {
+      for (let x = 0;x < width; x++)
+        for (let y = 0;y < height; y++)
+          yield { x, y };
+      break;
+    }
+    case "RIGHT" /* RIGHT */: {
+      for (let x = width - 1;x >= 0; x--)
+        for (let y = 0;y < height; y++)
+          yield { x, y };
+      break;
+    }
+    case "RANDOM" /* RANDOM */: {
+      const positions = [];
+      for (let y = 0;y < height; y++)
+        for (let x = 0;x < width; x++)
+          positions.push({ x, y });
+      for (let index = positions.length - 1;index >= 0; index--) {
+        const index_ = Math.floor(Math.random() * (index + 1));
+        const temporary = positions[index];
+        positions[index] = positions[index_];
+        positions[index_] = temporary;
+      }
+      yield* positions;
+      break;
+    }
+    case "SPIRAL_FROM_CENTER" /* SPIRAL_FROM_CENTER */:
+    case "SPIRAL_TO_CENTER" /* SPIRAL_TO_CENTER */: {
+      const visited = new Set;
+      const total = width * height;
+      let x = Math.floor(width / 2);
+      let y = Math.floor(height / 2);
+      const directories = [
+        [1, 0],
+        [0, 1],
+        [-1, 0],
+        [0, -1]
+      ];
+      let directionIndex = 0;
+      let steps = 1;
+      const inBounds = (x2, y2) => x2 >= 0 && x2 < width && y2 >= 0 && y2 < height;
+      const emit = function* () {
+        let count = 0;
+        while (count < total) {
+          for (let twice = 0;twice < 2; twice++) {
+            for (let index = 0;index < steps; index++) {
+              if (inBounds(x, y)) {
+                const key = `${x},${y}`;
+                if (!visited.has(key)) {
+                  visited.add(key);
+                  yield { x, y };
+                  count++;
+                  if (count >= total)
+                    return;
+                }
+              }
+              x += directories[directionIndex][0];
+              y += directories[directionIndex][1];
+            }
+            directionIndex = (directionIndex + 1) % 4;
+          }
+          steps++;
+        }
+      };
+      if (strategy === "SPIRAL_FROM_CENTER" /* SPIRAL_FROM_CENTER */)
+        yield* emit();
+      else {
+        const collected = [...emit()];
+        for (let index = collected.length - 1;index >= 0; index--)
+          yield collected[index];
+      }
+      break;
+    }
+  }
 }
 
 // src/pixels.ts
@@ -258,15 +355,27 @@ var widget_default = `<div class="move">
 <div class="content">
   <button class="select-image">Select image</button>
   <button class="draw" disabled>Draw</button>
-  <label class="p">Scale:&nbsp;<input class="scale" type="number" >%</label>
-  <label class="p">Opacity:&nbsp;<input class="opacity" type="range" min="0" max="100"></label>
+  <button class="count-users">Count users</button>
+  <select class="strategy">
+    <option value="RANDOM" selected>Random</option>
+    <option value="DOWN">Down</option>
+    <option value="UP">Up</option>
+    <option value="LEFT">Left</option>
+    <option value="RIGHT">Right</option>
+    <option value="SPIRAL_FROM_CENTER">Spiral from center</option>
+    <option value="SPIRAL_TO_CENTER">Spiral to center</option>
+  </select>
+
+  <label class="p">Scale:&nbsp;<input class="scale" type="number" />%</label>
+  <label class="p"
+    >Opacity:&nbsp;<input class="opacity" type="range" min="0" max="100"
+  /></label>
   <div class="colors"></div>
   <div class="eta p">ETA: <span class="value"></span></div>
   <div class="progress p">Progress: <span class="value"></span></div>
   <progress max="100"></progress>
   <div class="wstatus p"></div>
 </div>
-
 `;
 
 // src/widget.ts
@@ -305,6 +414,7 @@ class Widget {
     this.element.style.transform = `translate(${this.x}px, ${this.y}px)`;
     this.element.querySelector(".select-image").addEventListener("click", () => this.bot.selectImage());
     this.element.querySelector(".draw").addEventListener("click", () => this.bot.draw());
+    this.element.querySelector(".count-users").addEventListener("click", () => this.bot.countUsers());
     const $scale = this.element.querySelector(".scale");
     $scale.addEventListener("change", () => {
       if (!this.bot.image)
@@ -317,6 +427,10 @@ class Widget {
     $opacity.addEventListener("input", () => {
       this.bot.overlay.opacity = $opacity.valueAsNumber;
       this.bot.overlay.update();
+    });
+    const $strategy = this.element.querySelector(".strategy");
+    $strategy.addEventListener("change", () => {
+      this.bot.strategy = $strategy.value;
     });
     this.updateText();
   }
@@ -346,6 +460,7 @@ class Widget {
   updateText() {
     if (this.bot.image)
       this.updateColorsToBuy();
+    this.element.querySelector(".strategy").value = this.bot.strategy;
     const maxTasks = this.bot.image ? this.bot.image.pixels.length * this.bot.image.pixels[0].length : 0;
     this.element.querySelector(".scale").valueAsNumber = this.bot.image?.scale ?? 100;
     const doneTasks = maxTasks - this.bot.tasks.length;
@@ -401,6 +516,8 @@ class WPlaceBot {
   startPosition;
   startScreenPosition;
   pixelSize = 64;
+  strategy = "RANDOM" /* RANDOM */;
+  markerPixelPositionResolvers = [];
   markerPixelDataResolvers = [];
   widget = new Widget(this);
   overlay = new Overlay(this);
@@ -441,11 +558,46 @@ class WPlaceBot {
       this.image = await Pixels.fromSelectImage(this, this.colors, this.widget.element.querySelector(".scale").valueAsNumber);
       await this.updatePositionsWithMarker();
       await this.updateTasks();
+      await this.updateColors();
       this.overlay.update();
       this.widget.updateText();
       this.widget.setDisabled("draw", false);
       this.save();
     }, () => {
+      this.widget.setDisabled("select-image", false);
+    });
+  }
+  async countUsers() {
+    this.widget.status = "";
+    const users = new Set;
+    return this.widget.runWithStatusAsync("Counting users", async () => {
+      this.widget.setDisabled("count-users", true);
+      this.widget.setDisabled("draw", true);
+      this.widget.setDisabled("select-image", true);
+      await this.updatePositionsWithMarker();
+      const pos2 = await this.widget.runWithStatusAsync("Place bottom-right corner", async () => new Promise((resolve) => this.markerPixelPositionResolvers.push(resolve)), undefined, "\uD83D\uDDB1️");
+      const position = this.startPosition.clone();
+      const pixels = (pos2.globalY - this.startPosition.globalY) * (pos2.globalX - this.startPosition.globalX);
+      let counted = 0;
+      for (;position.globalY < pos2.globalY; position.y++) {
+        for (;position.globalX < pos2.globalX; position.x++) {
+          const dataPromise = new Promise((resolve) => {
+            this.markerPixelDataResolvers.push(resolve);
+          });
+          await this.clickMapAtPosition(position.toScreenPosition(this.startScreenPosition, this.startPosition, this.pixelSize));
+          const data = await dataPromise;
+          if (data.paintedBy.id !== 0)
+            users.add(data.paintedBy.id);
+          counted++;
+          this.widget.status = `⌛ Found ${users.size} users. ETA: ${600 * (pixels - counted) / 60000 | 0}m (${counted / pixels * 100 | 0}%)`;
+          await wait(500);
+        }
+        position.globalX = this.startPosition.globalX;
+      }
+    }, () => {
+      this.widget.status = `✅ Found ${users.size} users`;
+      this.widget.setDisabled("count-users", false);
+      this.widget.setDisabled("draw", false);
       this.widget.setDisabled("select-image", false);
     });
   }
@@ -461,8 +613,7 @@ class WPlaceBot {
       await this.updateColors();
       await this.updateTasks();
       while (this.tasks.length > 0 && !document.querySelector("ol")) {
-        const index = Math.random() * this.tasks.length | 0;
-        const task = this.tasks.splice(index, 1)[0];
+        const task = this.tasks.shift();
         document.getElementById(task.buttonId).click();
         document.documentElement.dispatchEvent(new MouseEvent("mousemove", {
           bubbles: true,
@@ -494,7 +645,8 @@ class WPlaceBot {
       widgetX: this.widget.x,
       widgetY: this.widget.y,
       overlayOpacity: this.overlay.opacity,
-      scale: this.image.scale
+      scale: this.image.scale,
+      strategy: this.strategy
     }));
   }
   async load() {
@@ -506,11 +658,12 @@ class WPlaceBot {
       this.startPosition = new WorldPosition(...data.startPosition);
       this.startScreenPosition = data.startScreenPosition;
       this.pixelSize = data.pixelSize;
+      this.strategy = data.strategy;
       await this.updateColors();
       this.image = await Pixels.fromURL(data.image, this.colors, data.scale);
       this.widget.element.querySelector(".scale").valueAsNumber = data.scale;
       this.overlay.opacity = data.overlayOpacity;
-      this.widget.element.querySelector(".scale").valueAsNumber = data.overlayOpacity;
+      this.widget.element.querySelector(".opacity").valueAsNumber = data.overlayOpacity;
       await this.updateTasks();
       this.widget.updateText();
       this.widget.updateColorsToBuy();
@@ -535,10 +688,10 @@ class WPlaceBot {
   updatePositionsWithMarker() {
     return this.widget.runWithStatusAsync("Aligning", async () => {
       document.querySelector(".flex.items-center .btn.btn-circle.btn-sm:nth-child(3)")?.click();
-      this.startPosition = await this.widget.runWithStatusAsync("Place marker", async () => new Promise((resolve) => this.markerPixelDataResolvers.push(resolve)), undefined, "\uD83D\uDDB1️");
+      this.startPosition = await this.widget.runWithStatusAsync("Place marker", async () => new Promise((resolve) => this.markerPixelPositionResolvers.push(resolve)), undefined, "\uD83D\uDDB1️");
       this.startScreenPosition = this.getMarkerScreenPosition();
       const markerPosition2Promise = new Promise((resolve) => {
-        this.markerPixelDataResolvers.push(resolve);
+        this.markerPixelPositionResolvers.push(resolve);
       });
       await this.clickMapAtPosition({
         x: this.canvas.width - 1,
@@ -558,24 +711,22 @@ class WPlaceBot {
         throw new NoImageError(this);
       this.tasks = [];
       const maps = new Map;
-      for (let y = 0;y < this.image.pixels.length; y++) {
-        for (let x = 0;x < this.image.pixels[0].length; x++) {
-          const color = this.image.pixels[y][x];
-          const position = this.startPosition.clone();
-          position.x += x;
-          position.y += y;
-          let map = maps.get(position.tileX + "/" + position.tileY);
-          if (!map) {
-            map = await Pixels.fromURL(`https://backend.wplace.live/files/s0/tiles/${position.tileX}/${position.tileY}.png`, this.colors);
-            maps.set(position.tileX + "/" + position.tileY, map);
-          }
-          const colorOnMap = map.pixels[position.y][position.x];
-          if (color.buttonId !== colorOnMap.buttonId)
-            this.tasks.push({
-              ...position.toScreenPosition(this.startScreenPosition, this.startPosition, this.pixelSize),
-              buttonId: color.buttonId
-            });
+      for (const { x, y } of strategyPositionIterator(this.image.pixels.length, this.image.pixels[0].length, this.strategy)) {
+        const color = this.image.pixels[y][x];
+        const position = this.startPosition.clone();
+        position.x += x;
+        position.y += y;
+        let map = maps.get(position.tileX + "/" + position.tileY);
+        if (!map) {
+          map = await Pixels.fromURL(`https://backend.wplace.live/files/s0/tiles/${position.tileX}/${position.tileY}.png`, this.colors);
+          maps.set(position.tileX + "/" + position.tileY, map);
         }
+        const colorOnMap = map.pixels[position.y][position.x];
+        if (color.buttonId !== colorOnMap.buttonId)
+          this.tasks.push({
+            ...position.toScreenPosition(this.startScreenPosition, this.startPosition, this.pixelSize),
+            buttonId: color.buttonId
+          });
       }
     });
   }
@@ -634,11 +785,16 @@ class WPlaceBot {
     globalThis.fetch = async (...arguments_) => {
       const response = await originalFetch(...arguments_);
       const url = typeof arguments_[0] === "string" ? arguments_[0] : arguments_[0].url;
-      setTimeout(() => {
+      const responseClone = response.clone();
+      setTimeout(async () => {
         const pixelMatch = pixelRegExp.exec(url);
         if (pixelMatch) {
+          for (let index = 0;index < this.markerPixelPositionResolvers.length; index++)
+            this.markerPixelPositionResolvers[index](new WorldPosition(+pixelMatch[1], +pixelMatch[2], +pixelMatch[3], +pixelMatch[4]));
+          this.markerPixelPositionResolvers.length = 0;
+          const data = await responseClone.json();
           for (let index = 0;index < this.markerPixelDataResolvers.length; index++)
-            this.markerPixelDataResolvers[index](new WorldPosition(+pixelMatch[1], +pixelMatch[2], +pixelMatch[3], +pixelMatch[4]));
+            this.markerPixelDataResolvers[index](data);
           this.markerPixelDataResolvers.length = 0;
           return;
         }
@@ -737,6 +893,9 @@ var style_default = `:root {
 }
 .wbot-widget .scale {
   width: 80px;
+}
+.wbot-widget .strategy {
+  text-align: center;
 }
 
 

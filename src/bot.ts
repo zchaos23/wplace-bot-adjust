@@ -2,8 +2,15 @@ import { NoImageError, NoMarkerError } from './errors'
 import { Overlay } from './overlay'
 import { Pixels } from './pixels'
 import { WorldPosition } from './position'
-import { DrawTask, Position, Save, WPlaceColor } from './types'
-import { SPACE_EVENT, wait } from './utilities'
+import {
+  DrawTask,
+  PixelMetaData,
+  Position,
+  Save,
+  Color,
+  Strategy,
+} from './types'
+import { SPACE_EVENT, strategyPositionIterator, wait } from './utilities'
 import { Widget } from './widget'
 
 /**
@@ -15,7 +22,7 @@ export class WPlaceBot {
   public tasks: DrawTask[] = []
 
   /** WPlace colors. Update with updateColors() */
-  public colors: WPlaceColor[] = []
+  public colors: Color[] = []
 
   /** Image pixels */
   public image?: Pixels
@@ -29,8 +36,16 @@ export class WPlaceBot {
   /** Estimated pixel size */
   public pixelSize = 64
 
+  /** How to draw */
+  public strategy: Strategy = Strategy.RANDOM
+
   /** Used to wait for pixel data on marker set */
-  protected markerPixelDataResolvers: ((position: WorldPosition) => unknown)[] =
+  protected markerPixelPositionResolvers: ((
+    position: WorldPosition,
+  ) => unknown)[] = []
+
+  /** Used to wait for pixel data on marker set */
+  protected markerPixelDataResolvers: ((position: PixelMetaData) => unknown)[] =
     []
 
   public widget = new Widget(this)
@@ -89,12 +104,69 @@ export class WPlaceBot {
         )
         await this.updatePositionsWithMarker()
         await this.updateTasks()
+        await this.updateColors() // To try to save position
         this.overlay.update()
         this.widget.updateText()
         this.widget.setDisabled('draw', false)
         this.save()
       },
       () => {
+        this.widget.setDisabled('select-image', false)
+      },
+    )
+  }
+
+  /** Handles selectImage button press */
+  public async countUsers() {
+    this.widget.status = ''
+    const users = new Set<number>()
+    return this.widget.runWithStatusAsync(
+      'Counting users',
+      async () => {
+        this.widget.setDisabled('count-users', true)
+        this.widget.setDisabled('draw', true)
+        this.widget.setDisabled('select-image', true)
+        await this.updatePositionsWithMarker()
+        const pos2 = await this.widget.runWithStatusAsync(
+          'Place bottom-right corner',
+          async () =>
+            new Promise<WorldPosition>((resolve) =>
+              this.markerPixelPositionResolvers.push(resolve),
+            ),
+          undefined,
+          '🖱️',
+        )
+        const position = this.startPosition!.clone()
+        const pixels =
+          (pos2.globalY - this.startPosition!.globalY) *
+          (pos2.globalX - this.startPosition!.globalX)
+        let counted = 0
+        for (; position.globalY < pos2.globalY; position.y++) {
+          for (; position.globalX < pos2.globalX; position.x++) {
+            const dataPromise = new Promise<PixelMetaData>((resolve) => {
+              this.markerPixelDataResolvers.push(resolve)
+            })
+            await this.clickMapAtPosition(
+              position.toScreenPosition(
+                this.startScreenPosition!,
+                this.startPosition!,
+                this.pixelSize,
+              ),
+            )
+            const data = await dataPromise
+            if (data.paintedBy.id !== 0) users.add(data.paintedBy.id)
+            counted++
+
+            this.widget.status = `⌛ Found ${users.size} users. ETA: ${((600 * (pixels - counted)) / 60_000) | 0}m (${((counted / pixels) * 100) | 0}%)`
+            await wait(500)
+          }
+          position.globalX = this.startPosition!.globalX
+        }
+      },
+      () => {
+        this.widget.status = `✅ Found ${users.size} users`
+        this.widget.setDisabled('count-users', false)
+        this.widget.setDisabled('draw', false)
         this.widget.setDisabled('select-image', false)
       },
     )
@@ -114,8 +186,7 @@ export class WPlaceBot {
         await this.updateColors()
         await this.updateTasks()
         while (this.tasks.length > 0 && !document.querySelector('ol')) {
-          const index = (Math.random() * this.tasks.length) | 0
-          const task = this.tasks.splice(index, 1)[0]!
+          const task = this.tasks.shift()!
           ;(document.getElementById(task.buttonId) as HTMLButtonElement).click()
           document.documentElement.dispatchEvent(
             new MouseEvent('mousemove', {
@@ -160,6 +231,7 @@ export class WPlaceBot {
         widgetY: this.widget.y,
         overlayOpacity: this.overlay.opacity,
         scale: this.image.scale,
+        strategy: this.strategy,
       }),
     )
   }
@@ -173,6 +245,7 @@ export class WPlaceBot {
       this.startPosition = new WorldPosition(...data.startPosition)
       this.startScreenPosition = data.startScreenPosition
       this.pixelSize = data.pixelSize
+      this.strategy = data.strategy
       await this.updateColors()
       this.image = await Pixels.fromURL(data.image, this.colors, data.scale)
       this.widget.element.querySelector<HTMLInputElement>(
@@ -180,7 +253,7 @@ export class WPlaceBot {
       )!.valueAsNumber = data.scale
       this.overlay.opacity = data.overlayOpacity
       this.widget.element.querySelector<HTMLInputElement>(
-        '.scale',
+        '.opacity',
       )!.valueAsNumber = data.overlayOpacity
       await this.updateTasks()
       this.widget.updateText()
@@ -231,7 +304,7 @@ export class WPlaceBot {
         'Place marker',
         async () =>
           new Promise<WorldPosition>((resolve) =>
-            this.markerPixelDataResolvers.push(resolve),
+            this.markerPixelPositionResolvers.push(resolve),
           ),
         undefined,
         '🖱️',
@@ -240,7 +313,7 @@ export class WPlaceBot {
 
       // Point 2
       const markerPosition2Promise = new Promise<WorldPosition>((resolve) => {
-        this.markerPixelDataResolvers.push(resolve)
+        this.markerPixelPositionResolvers.push(resolve)
       })
       await this.clickMapAtPosition({
         x: this.canvas!.width - 1,
@@ -264,31 +337,33 @@ export class WPlaceBot {
       if (!this.image) throw new NoImageError(this)
       this.tasks = []
       const maps = new Map<string, Pixels>()
-      for (let y = 0; y < this.image.pixels.length; y++) {
-        for (let x = 0; x < this.image.pixels[0]!.length; x++) {
-          const color = this.image.pixels[y]![x]!
-          const position = this.startPosition.clone()
-          position.x += x
-          position.y += y
-          let map = maps.get(position.tileX + '/' + position.tileY)
-          if (!map) {
-            map = await Pixels.fromURL(
-              `https://backend.wplace.live/files/s0/tiles/${position.tileX}/${position.tileY}.png`,
-              this.colors,
-            )
-            maps.set(position.tileX + '/' + position.tileY, map)
-          }
-          const colorOnMap = map.pixels[position.y]![position.x]!
-          if (color.buttonId !== colorOnMap.buttonId)
-            this.tasks.push({
-              ...position.toScreenPosition(
-                this.startScreenPosition,
-                this.startPosition,
-                this.pixelSize,
-              ),
-              buttonId: color.buttonId,
-            })
+      for (const { x, y } of strategyPositionIterator(
+        this.image.pixels.length,
+        this.image.pixels[0]!.length,
+        this.strategy,
+      )) {
+        const color = this.image.pixels[y]![x]!
+        const position = this.startPosition.clone()
+        position.x += x
+        position.y += y
+        let map = maps.get(position.tileX + '/' + position.tileY)
+        if (!map) {
+          map = await Pixels.fromURL(
+            `https://backend.wplace.live/files/s0/tiles/${position.tileX}/${position.tileY}.png`,
+            this.colors,
+          )
+          maps.set(position.tileX + '/' + position.tileY, map)
         }
+        const colorOnMap = map.pixels[position.y]![position.x]!
+        if (color.buttonId !== colorOnMap.buttonId)
+          this.tasks.push({
+            ...position.toScreenPosition(
+              this.startScreenPosition,
+              this.startPosition,
+              this.pixelSize,
+            ),
+            buttonId: color.buttonId,
+          })
       }
     })
   }
@@ -325,7 +400,7 @@ export class WPlaceBot {
             a: 0,
             available: true,
             buttonId: button.id,
-          } satisfies WPlaceColor
+          } satisfies Color
         const rgb = button.style.background
           .slice(4, -1)
           .split(', ')
@@ -337,7 +412,7 @@ export class WPlaceBot {
           a: 255,
           available: button.children.length === 0,
           buttonId: button.id,
-        } satisfies WPlaceColor
+        } satisfies Color
       })
     })
   }
@@ -375,15 +450,16 @@ export class WPlaceBot {
         typeof arguments_[0] === 'string'
           ? arguments_[0]
           : (arguments_[0] as Request).url
-      setTimeout(() => {
+      const responseClone = response.clone()
+      setTimeout(async () => {
         const pixelMatch = pixelRegExp.exec(url)
         if (pixelMatch) {
           for (
             let index = 0;
-            index < this.markerPixelDataResolvers.length;
+            index < this.markerPixelPositionResolvers.length;
             index++
           )
-            this.markerPixelDataResolvers[index]!(
+            this.markerPixelPositionResolvers[index]!(
               new WorldPosition(
                 +pixelMatch[1]!,
                 +pixelMatch[2]!,
@@ -391,6 +467,15 @@ export class WPlaceBot {
                 +pixelMatch[4]!,
               ),
             )
+          this.markerPixelPositionResolvers.length = 0
+
+          const data = (await responseClone.json()) as PixelMetaData
+          for (
+            let index = 0;
+            index < this.markerPixelDataResolvers.length;
+            index++
+          )
+            this.markerPixelDataResolvers[index]!(data)
           this.markerPixelDataResolvers.length = 0
           return
         }

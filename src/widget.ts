@@ -1,5 +1,6 @@
 import { WPlaceBot } from './bot'
 import { NoImageError, WPlaceBotError } from './errors'
+import { Strategy } from './types'
 // @ts-ignore
 import html from './widget.html' with { type: 'text' }
 
@@ -57,6 +58,9 @@ export class Widget {
     this.element
       .querySelector('.draw')!
       .addEventListener('click', () => this.bot.draw())
+    this.element
+      .querySelector('.count-users')!
+      .addEventListener('click', () => this.bot.countUsers())
     const $scale = this.element.querySelector<HTMLInputElement>('.scale')!
     $scale.addEventListener('change', () => {
       if (!this.bot.image) return
@@ -68,6 +72,10 @@ export class Widget {
     $opacity.addEventListener('input', () => {
       this.bot.overlay.opacity = $opacity.valueAsNumber
       this.bot.overlay.update()
+    })
+    const $strategy = this.element.querySelector<HTMLInputElement>('.strategy')!
+    $strategy.addEventListener('change', () => {
+      this.bot.strategy = $strategy.value as Strategy
     })
     this.updateText()
   }
@@ -102,6 +110,8 @@ export class Widget {
   /** Update values in widget */
   public updateText() {
     if (this.bot.image) this.updateColorsToBuy()
+    this.element.querySelector<HTMLInputElement>('.strategy')!.value =
+      this.bot.strategy
     const maxTasks = this.bot.image
       ? this.bot.image.pixels.length * this.bot.image.pixels[0]!.length
       : 0

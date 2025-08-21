@@ -5,9 +5,17 @@ export class WorldPosition {
   public get globalX() {
     return this.tileX * TILE_SIZE + this.x
   }
+  public set globalX(value: number) {
+    this.tileX = (value / TILE_SIZE) | 0
+    this.x = value % TILE_SIZE
+  }
 
   public get globalY() {
     return this.tileY * TILE_SIZE + this.y
+  }
+  public set globalY(value: number) {
+    this.tileY = (value / TILE_SIZE) | 0
+    this.y = value % TILE_SIZE
   }
 
   private _x!: number
