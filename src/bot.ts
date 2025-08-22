@@ -52,40 +52,9 @@ export class WPlaceBot {
 
   public overlay = new Overlay(this)
 
-  private canvas?: HTMLCanvasElement
-
   public constructor() {
     this.registerFetchInterceptor()
-    const interval = setInterval(async () => {
-      this.canvas =
-        document.querySelector<HTMLCanvasElement>('.maplibregl-canvas') ??
-        undefined
-      // Check for paint, canvas and user avatar before init
-      if (
-        this.canvas &&
-        document.querySelector(
-          '.btn.btn-primary.btn-lg.relative.z-30 canvas',
-        ) &&
-        document.querySelector('.avatar.center-absolute.absolute')
-      ) {
-        clearInterval(interval)
-        let moving = false
-        this.canvas.addEventListener('wheel', () => {
-          if (this.image) this.onMove()
-        })
-        this.canvas.addEventListener('mousedown', (event) => {
-          if (event.button === 0) moving = true
-        })
-        this.canvas.addEventListener('mouseup', (event) => {
-          if (event.button === 0) moving = false
-        })
-        this.canvas.addEventListener('mousemove', () => {
-          if (moving) this.onMove()
-        })
-        await this.load()
-        this.widget.element.classList.remove('hidden')
-      }
-    }, 500)
+    void this.init()
   }
 
   /** Handles selectImage button press */
@@ -232,29 +201,69 @@ export class WPlaceBot {
         overlayOpacity: this.overlay.opacity,
         scale: this.image.scale,
         strategy: this.strategy,
+        location: localStorage.getItem('location'),
       }),
     )
   }
 
-  /** Load data from localStorage */
-  public async load() {
+  /** Load data and init listeners*/
+  public async init() {
     const json = localStorage.getItem('wbot')!
-    if (!json) return
+    let save: Save | undefined
     try {
-      const data = JSON.parse(json) as Save
-      this.startPosition = new WorldPosition(...data.startPosition)
-      this.startScreenPosition = data.startScreenPosition
-      this.pixelSize = data.pixelSize
-      this.strategy = data.strategy
+      save = JSON.parse(json) as Save
+    } catch {
+      localStorage.removeItem('wbot')
+    }
+    // Restore map location. Because sometimes it just breaks
+    if (save?.location?.[0] === '{')
+      localStorage.setItem('location', save.location)
+    // Wait for website to load
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        if (
+          document.querySelector<HTMLCanvasElement>('.maplibregl-canvas') &&
+          document.querySelector(
+            '.btn.btn-primary.btn-lg.relative.z-30 canvas',
+          ) &&
+          document.querySelector('.avatar.center-absolute.absolute')
+        ) {
+          resolve()
+          clearInterval(interval)
+        }
+      }, 500)
+    })
+    let moving = false
+    const canvas =
+      document.querySelector<HTMLCanvasElement>('.maplibregl-canvas')!
+    canvas.addEventListener('wheel', () => {
+      if (this.image) this.onMove()
+    })
+    canvas.addEventListener('mousedown', (event) => {
+      if (event.button === 0) moving = true
+    })
+    canvas.addEventListener('mouseup', (event) => {
+      if (event.button === 0) moving = false
+    })
+    canvas.addEventListener('mousemove', () => {
+      if (moving) this.onMove()
+    })
+    this.widget.element.classList.remove('hidden')
+    if (!save) return
+    try {
+      this.startPosition = new WorldPosition(...save.startPosition)
+      this.startScreenPosition = save.startScreenPosition
+      this.pixelSize = save.pixelSize
+      this.strategy = save.strategy
       await this.updateColors()
-      this.image = await Pixels.fromURL(data.image, this.colors, data.scale)
+      this.image = await Pixels.fromURL(save.image, this.colors, save.scale)
       this.widget.element.querySelector<HTMLInputElement>(
         '.scale',
-      )!.valueAsNumber = data.scale
-      this.overlay.opacity = data.overlayOpacity
+      )!.valueAsNumber = save.scale
+      this.overlay.opacity = save.overlayOpacity
       this.widget.element.querySelector<HTMLInputElement>(
         '.opacity',
-      )!.valueAsNumber = data.overlayOpacity
+      )!.valueAsNumber = save.overlayOpacity
       await this.updateTasks()
       this.widget.updateText()
       this.widget.updateColorsToBuy()
@@ -262,7 +271,6 @@ export class WPlaceBot {
       this.widget.setDisabled('draw', false)
     } catch {
       localStorage.removeItem('wbot')
-      this.widget.status = '❌ Failed to load save'
     }
   }
 
@@ -316,8 +324,8 @@ export class WPlaceBot {
         this.markerPixelPositionResolvers.push(resolve)
       })
       await this.clickMapAtPosition({
-        x: this.canvas!.width - 1,
-        y: this.canvas!.height - 1,
+        x: window.innerWidth - 1,
+        y: window.innerHeight - 1,
       })
       const markerPosition2 = await markerPosition2Promise
       const markerScreenPosition2 = this.getMarkerScreenPosition()
@@ -371,15 +379,17 @@ export class WPlaceBot {
   /** Click map at the screen position */
   protected async clickMapAtPosition(screenPosition: Position) {
     await this.waitForUnfocus()
-    this.canvas?.dispatchEvent(
-      new MouseEvent('click', {
-        bubbles: true,
-        cancelable: true,
-        clientX: screenPosition.x,
-        clientY: screenPosition.y,
-        button: 0,
-      }),
-    )
+    document
+      .querySelector<HTMLCanvasElement>('.maplibregl-canvas')!
+      .dispatchEvent(
+        new MouseEvent('click', {
+          bubbles: true,
+          cancelable: true,
+          clientX: screenPosition.x,
+          clientY: screenPosition.y,
+          button: 0,
+        }),
+      )
     await wait(1)
   }
 

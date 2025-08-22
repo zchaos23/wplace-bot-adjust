@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         wplace-bot
 // @namespace    https://github.com/SoundOfTheSky
-// @version      3.1.0
+// @version      3.1.1
 // @description  Bot to automate painting on website https://wplace.live
 // @author       SoundOfTheSky
 // @license      MPL-2.0
@@ -521,34 +521,9 @@ class WPlaceBot {
   markerPixelDataResolvers = [];
   widget = new Widget(this);
   overlay = new Overlay(this);
-  canvas;
   constructor() {
     this.registerFetchInterceptor();
-    const interval = setInterval(async () => {
-      this.canvas = document.querySelector(".maplibregl-canvas") ?? undefined;
-      if (this.canvas && document.querySelector(".btn.btn-primary.btn-lg.relative.z-30 canvas") && document.querySelector(".avatar.center-absolute.absolute")) {
-        clearInterval(interval);
-        let moving = false;
-        this.canvas.addEventListener("wheel", () => {
-          if (this.image)
-            this.onMove();
-        });
-        this.canvas.addEventListener("mousedown", (event) => {
-          if (event.button === 0)
-            moving = true;
-        });
-        this.canvas.addEventListener("mouseup", (event) => {
-          if (event.button === 0)
-            moving = false;
-        });
-        this.canvas.addEventListener("mousemove", () => {
-          if (moving)
-            this.onMove();
-        });
-        await this.load();
-        this.widget.element.classList.remove("hidden");
-      }
-    }, 500);
+    this.init();
   }
   async selectImage() {
     this.widget.status = "";
@@ -646,24 +621,59 @@ class WPlaceBot {
       widgetY: this.widget.y,
       overlayOpacity: this.overlay.opacity,
       scale: this.image.scale,
-      strategy: this.strategy
+      strategy: this.strategy,
+      location: localStorage.getItem("location")
     }));
   }
-  async load() {
+  async init() {
     const json = localStorage.getItem("wbot");
-    if (!json)
+    let save;
+    try {
+      save = JSON.parse(json);
+    } catch {
+      localStorage.removeItem("wbot");
+    }
+    if (save?.location?.[0] === "{")
+      localStorage.setItem("location", save.location);
+    await new Promise((resolve) => {
+      const interval = setInterval(() => {
+        if (document.querySelector(".maplibregl-canvas") && document.querySelector(".btn.btn-primary.btn-lg.relative.z-30 canvas") && document.querySelector(".avatar.center-absolute.absolute")) {
+          resolve();
+          clearInterval(interval);
+        }
+      }, 500);
+    });
+    let moving = false;
+    const canvas = document.querySelector(".maplibregl-canvas");
+    canvas.addEventListener("wheel", () => {
+      if (this.image)
+        this.onMove();
+    });
+    canvas.addEventListener("mousedown", (event) => {
+      if (event.button === 0)
+        moving = true;
+    });
+    canvas.addEventListener("mouseup", (event) => {
+      if (event.button === 0)
+        moving = false;
+    });
+    canvas.addEventListener("mousemove", () => {
+      if (moving)
+        this.onMove();
+    });
+    this.widget.element.classList.remove("hidden");
+    if (!save)
       return;
     try {
-      const data = JSON.parse(json);
-      this.startPosition = new WorldPosition(...data.startPosition);
-      this.startScreenPosition = data.startScreenPosition;
-      this.pixelSize = data.pixelSize;
-      this.strategy = data.strategy;
+      this.startPosition = new WorldPosition(...save.startPosition);
+      this.startScreenPosition = save.startScreenPosition;
+      this.pixelSize = save.pixelSize;
+      this.strategy = save.strategy;
       await this.updateColors();
-      this.image = await Pixels.fromURL(data.image, this.colors, data.scale);
-      this.widget.element.querySelector(".scale").valueAsNumber = data.scale;
-      this.overlay.opacity = data.overlayOpacity;
-      this.widget.element.querySelector(".opacity").valueAsNumber = data.overlayOpacity;
+      this.image = await Pixels.fromURL(save.image, this.colors, save.scale);
+      this.widget.element.querySelector(".scale").valueAsNumber = save.scale;
+      this.overlay.opacity = save.overlayOpacity;
+      this.widget.element.querySelector(".opacity").valueAsNumber = save.overlayOpacity;
       await this.updateTasks();
       this.widget.updateText();
       this.widget.updateColorsToBuy();
@@ -671,7 +681,6 @@ class WPlaceBot {
       this.widget.setDisabled("draw", false);
     } catch {
       localStorage.removeItem("wbot");
-      this.widget.status = "❌ Failed to load save";
     }
   }
   async openColors() {
@@ -694,8 +703,8 @@ class WPlaceBot {
         this.markerPixelPositionResolvers.push(resolve);
       });
       await this.clickMapAtPosition({
-        x: this.canvas.width - 1,
-        y: this.canvas.height - 1
+        x: window.innerWidth - 1,
+        y: window.innerHeight - 1
       });
       const markerPosition2 = await markerPosition2Promise;
       const markerScreenPosition2 = this.getMarkerScreenPosition();
@@ -732,7 +741,7 @@ class WPlaceBot {
   }
   async clickMapAtPosition(screenPosition) {
     await this.waitForUnfocus();
-    this.canvas?.dispatchEvent(new MouseEvent("click", {
+    document.querySelector(".maplibregl-canvas").dispatchEvent(new MouseEvent("click", {
       bubbles: true,
       cancelable: true,
       clientX: screenPosition.x,

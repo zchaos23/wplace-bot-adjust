@@ -36,6 +36,7 @@ export type Save = {
   overlayOpacity: number
   scale: number
   strategy: Strategy
+  location?: string
 }
 
 export type PixelMetaData = {
