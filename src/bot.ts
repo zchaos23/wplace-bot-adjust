@@ -185,10 +185,7 @@ export class WPlaceBot {
 
   /** Save data to localStorage */
   public save() {
-    if (!this.image || !this.startPosition || !this.startScreenPosition) {
-      localStorage.removeItem('wbot')
-      return
-    }
+    if (!this.image || !this.startPosition || !this.startScreenPosition) return
     localStorage.setItem(
       'wbot',
       JSON.stringify({
@@ -213,7 +210,7 @@ export class WPlaceBot {
     try {
       save = JSON.parse(json) as Save
     } catch {
-      localStorage.removeItem('wbot')
+      /* empty */
     }
     // Restore map location. Because sometimes it just breaks
     if (save?.location?.[0] === '{')
@@ -270,7 +267,7 @@ export class WPlaceBot {
       this.overlay.update()
       this.widget.setDisabled('draw', false)
     } catch {
-      localStorage.removeItem('wbot')
+      /* empty */
     }
   }
 
