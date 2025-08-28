@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         wplace-bot
+// @name         wplace-bot-adjust
 // @namespace    https://github.com/SoundOfTheSky
 // @version      3.1.3
 // @description  Bot to automate painting on website https://wplace.live
@@ -364,6 +364,7 @@ var widget_default = `<div class="move">
     <option value="RIGHT">Right</option>
     <option value="SPIRAL_FROM_CENTER">Spiral from center</option>
     <option value="SPIRAL_TO_CENTER">Spiral to center</option>
+    <option value="ADJUST">Adjust</option>
   </select>
 
   <label class="p">Scale:&nbsp;<input class="scale" type="number" />%</label>
@@ -714,23 +715,142 @@ class WPlaceBot {
       if (!this.image)
         throw new NoImageError(this);
       this.tasks = [];
+      const height = this.image.pixels.length;
+      const width = this.image.pixels[0].length;
       const maps = new Map;
-      for (const { x, y } of strategyPositionIterator(this.image.pixels.length, this.image.pixels[0].length, this.strategy)) {
-        const color = this.image.pixels[y][x];
-        const position = this.startPosition.clone();
-        position.x += x;
-        position.y += y;
-        let map = maps.get(position.tileX + "/" + position.tileY);
-        if (!map) {
-          map = await Pixels.fromURL(`https://backend.wplace.live/files/s0/tiles/${position.tileX}/${position.tileY}.png`, this.colors);
-          maps.set(position.tileX + "/" + position.tileY, map);
+      if (this.strategy !== "ADJUST") {
+        for (const { x, y } of strategyPositionIterator(height, width, this.strategy)) {
+          const color = this.image.pixels[y][x];
+          const position = this.startPosition.clone();
+          position.x += x;
+          position.y += y;
+          let map = maps.get(position.tileX + "/" + position.tileY);
+          if (!map) {
+            map = await Pixels.fromURL(`https://backend.wplace.live/files/s0/tiles/${position.tileX}/${position.tileY}.png`, this.colors);
+            maps.set(position.tileX + "/" + position.tileY, map);
+          }
+          const colorOnMap = map.pixels[position.y][position.x];
+          if (color.buttonId !== colorOnMap.buttonId)
+            this.tasks.push({
+              ...position.toScreenPosition(this.startScreenPosition, this.startPosition, this.pixelSize),
+              buttonId: color.buttonId
+            });
         }
-        const colorOnMap = map.pixels[position.y][position.x];
-        if (color.buttonId !== colorOnMap.buttonId)
-          this.tasks.push({
+      } else {
+        // Adjust strategy: priority outer contour, then internal edges/complex, then down for the rest
+        const tiles = new Set();
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const position = this.startPosition.clone();
+            position.x += x;
+            position.y += y;
+            tiles.add(position.tileX + "/" + position.tileY);
+          }
+        }
+        for (const tile of tiles) {
+          const [tx, ty] = tile.split('/');
+          const map = await Pixels.fromURL(`https://backend.wplace.live/files/s0/tiles/${tx}/${ty}.png`, this.colors);
+          maps.set(tile, map);
+        }
+
+        const getColorOnMap = (x, y) => {
+          const position = this.startPosition.clone();
+          position.x += x;
+          position.y += y;
+          const map = maps.get(position.tileX + "/" + position.tileY);
+          return map.pixels[position.y][position.x];
+        };
+
+        const needsPaint = (x, y) => {
+          const color = this.image.pixels[y][x];
+          if (color.a === 0) return false; // skip transparent
+          const colorOnMap = getColorOnMap(x, y);
+          return color.buttonId !== colorOnMap.buttonId;
+        };
+
+        const getTask = (x, y) => {
+          const color = this.image.pixels[y][x];
+          const position = this.startPosition.clone();
+          position.x += x;
+          position.y += y;
+          return {
             ...position.toScreenPosition(this.startScreenPosition, this.startPosition, this.pixelSize),
             buttonId: color.buttonId
-          });
+          };
+        };
+
+        const directions = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+
+        // Group1: Outer contour
+        const group1 = [];
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const color = this.image.pixels[y][x];
+            if (color.a === 0) continue;
+            if (!needsPaint(x, y)) continue;
+            let isOutline = false;
+            for (const [dx, dy] of directions) {
+              const nx = x + dx;
+              const ny = y + dy;
+              if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+                isOutline = true;
+                break;
+              }
+              const ncolor = this.image.pixels[ny][nx];
+              if (ncolor.a === 0) {
+                isOutline = true;
+                break;
+              }
+            }
+            if (isOutline) {
+              group1.push({x, y});
+            }
+          }
+        }
+        for (const pos of group1) {
+          this.tasks.push(getTask(pos.x, pos.y));
+        }
+
+        // Group2: Internal edges / complex areas
+        const group2 = [];
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const color = this.image.pixels[y][x];
+            if (color.a === 0) continue;
+            if (!needsPaint(x, y)) continue;
+            if (group1.some(p => p.x === x && p.y === y)) continue;
+            let diffNeighbors = 0;
+            for (const [dx, dy] of directions) {
+              const nx = x + dx;
+              const ny = y + dy;
+              if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                const ncolor = this.image.pixels[ny][nx];
+                if (ncolor.buttonId !== color.buttonId) {
+                  diffNeighbors++;
+                }
+              }
+            }
+            if (diffNeighbors > 0) {
+              group2.push({x, y, complexity: diffNeighbors});
+            }
+          }
+        }
+        group2.sort((a, b) => b.complexity - a.complexity || a.y - b.y || a.x - b.x);
+        for (const pos of group2) {
+          this.tasks.push(getTask(pos.x, pos.y));
+        }
+
+        // Group3: Remaining, from top to bottom
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const color = this.image.pixels[y][x];
+            if (color.a === 0) continue;
+            if (!needsPaint(x, y)) continue;
+            if (group1.some(p => p.x === x && p.y === y)) continue;
+            if (group2.some(p => p.x === x && p.y === y)) continue;
+            this.tasks.push(getTask(x, y));
+          }
+        }
       }
     });
   }
